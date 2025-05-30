@@ -4,9 +4,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
-                           QMenu, QInputDialog, QGridLayout, QGroupBox)
-from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor
+                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit)
+from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage
 
 class FileFinderThread(QThread):
     """Thread to find files in background without freezing the UI"""
@@ -177,6 +177,27 @@ class FileOrganizerGUI(QMainWindow):
         
         results_layout.addLayout(process_layout)
         
+        # Add preview panel
+        preview_group = QGroupBox("File Preview")
+        preview_layout = QVBoxLayout(preview_group)
+        
+        # Image preview label
+        self.preview_image_label = QLabel()
+        self.preview_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_image_label.setMinimumHeight(200)
+        self.preview_image_label.setMaximumHeight(200)
+        self.preview_image_label.setVisible(False)
+        preview_layout.addWidget(self.preview_image_label)
+        
+        # Text preview area
+        self.preview_text = QTextEdit()
+        self.preview_text.setReadOnly(True)
+        self.preview_text.setMinimumHeight(150)
+        self.preview_text.setText("Select a file to see preview.")
+        preview_layout.addWidget(self.preview_text)
+        
+        results_layout.addWidget(preview_group)
+        
         splitter.addWidget(results_panel)
         
         # Set splitter proportions
@@ -188,6 +209,9 @@ class FileOrganizerGUI(QMainWindow):
         if header is not None:
             header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # Make the new filename column stretch
+            
+        # Connect selection change to preview update
+        self.file_view.selectionModel().selectionChanged.connect(self.update_preview)
     
     def browse_source_folder(self):
         """Browse for source folder and populate file tree"""
@@ -352,6 +376,97 @@ class FileOrganizerGUI(QMainWindow):
         if header is not None:
             header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            
+        # Update preview if available
+        self.update_preview()
+    
+    def update_preview(self):
+        """Update the preview panel with the selected file content"""
+        if not self.analyzed_files:
+            self.preview_text.setText("No files analyzed yet.")
+            self.preview_image_label.setVisible(False)
+            return
+            
+        indexes = self.file_view.selectionModel().selectedRows()
+        if not indexes:
+            self.preview_text.setText("Select a file to see preview.")
+            self.preview_image_label.setVisible(False)
+            return
+            
+        row_index = indexes[0].row()
+        if 0 <= row_index < len(self.analyzed_files):
+            file_path = self.analyzed_files[row_index]['original_path']
+            self.show_file_preview(file_path)
+    
+    def show_file_preview(self, file_path):
+        """Show a preview of the selected file"""
+        if not os.path.exists(file_path):
+            self.preview_text.setText(f"File not found: {file_path}")
+            self.preview_image_label.setVisible(False)
+            return
+            
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        # Handle image files
+        if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff']:
+            try:
+                # Load image and create a thumbnail
+                pixmap = QPixmap(file_path)
+                if not pixmap.isNull():
+                    # Scale to fit preview area while maintaining aspect ratio
+                    scaled_pixmap = pixmap.scaled(
+                        self.preview_image_label.width(), 
+                        200,  # Max height
+                        Qt.AspectRatioMode.KeepAspectRatio, 
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    self.preview_image_label.setPixmap(scaled_pixmap)
+                    self.preview_image_label.setVisible(True)
+                    
+                    # For images, show basic file info in text area
+                    file_size = os.path.getsize(file_path) / 1024  # KB
+                    image = QImage(file_path)
+                    dimensions = f"{image.width()}x{image.height()}"
+                    
+                    # Extract text (OCR) for images
+                    extracted_text = self.document_processor.extract_text(file_path)
+                    
+                    preview_text = (
+                        f"Image Preview: {os.path.basename(file_path)}\n"
+                        f"Dimensions: {dimensions}\n"
+                        f"Size: {file_size:.1f} KB\n"
+                        f"Format: {file_ext[1:].upper()}\n\n"
+                        f"Extracted Text (OCR):\n"
+                        f"{extracted_text[:500]}{'...' if len(extracted_text) > 500 else ''}"
+                    )
+                    self.preview_text.setText(preview_text)
+                else:
+                    self.preview_text.setText(f"Cannot load image: {file_path}")
+                    self.preview_image_label.setVisible(False)
+            except Exception as e:
+                self.preview_text.setText(f"Error loading image: {str(e)}")
+                self.preview_image_label.setVisible(False)
+        
+        # Handle PDF files
+        elif file_ext == '.pdf':
+            self.preview_image_label.setVisible(False)
+            
+            # Extract text from PDF
+            extracted_text = self.document_processor.extract_text(file_path)
+            
+            file_size = os.path.getsize(file_path) / 1024  # KB
+            preview_text = (
+                f"PDF Preview: {os.path.basename(file_path)}\n"
+                f"Size: {file_size:.1f} KB\n\n"
+                f"Extracted Text (first 1000 characters):\n"
+                f"{extracted_text[:1000]}{'...' if len(extracted_text) > 1000 else ''}"
+            )
+            self.preview_text.setText(preview_text)
+        
+        # Handle other file types
+        else:
+            self.preview_image_label.setVisible(False)
+            self.preview_text.setText(f"No preview available for {file_ext} files.")
     
     def add_file_to_model(self, analysis_data):
         """Add a file analysis result to the model"""

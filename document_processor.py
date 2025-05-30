@@ -18,7 +18,7 @@ class DocumentProcessor:
         try:
             if file_ext == '.pdf':
                 return self._extract_text_from_pdf(file_path)
-            elif file_ext in ['.jpg', '.jpeg', '.png']:
+            elif file_ext in ['.jpg', '.jpeg', '.png', '.gif']:
                 return self._extract_text_from_image(file_path)
             else:
                 logging.warning(f"Unsupported file format: {file_ext}")
@@ -51,6 +51,11 @@ class DocumentProcessor:
         """Extract text from image file using OCR."""
         try:
             image = Image.open(file_path)
+
+            # Convert GIF to RGB mode if necessary
+            if image.format == 'GIF':
+                image = image.convert('RGB')
+
             text = pytesseract.image_to_string(image)
             return text
         except Exception as e:

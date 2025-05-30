@@ -184,9 +184,10 @@ class FileOrganizerGUI(QMainWindow):
         main_layout.addWidget(splitter)
         
         # Configure file view headers
-        if self.file_view.header():
-            self.file_view.header().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-            self.file_view.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # Make the new filename column stretch
+        header = self.file_view.header()
+        if header is not None:
+            header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # Make the new filename column stretch
     
     def browse_source_folder(self):
         """Browse for source folder and populate file tree"""
@@ -220,8 +221,11 @@ class FileOrganizerGUI(QMainWindow):
     def get_selected_files(self):
         """Get list of selected files or folders and return supported files"""
         selected_files = []
-        selection = self.file_tree.selectionModel().selectedIndexes()
-        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff']
+        selection_model = self.file_tree.selectionModel()
+        if selection_model is None:
+            return selected_files
+        selection = selection_model.selectedIndexes()
+        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif']
         for index in selection:
             if index.column() == 0:  # Avoid duplicates
                 file_path = self.file_system_model.filePath(index)
@@ -344,9 +348,10 @@ class FileOrganizerGUI(QMainWindow):
         progress.close()
         
         # Configure view after adding data
-        if self.file_view.header():
-            self.file_view.header().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-            self.file_view.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header = self.file_view.header()
+        if header is not None:
+            header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
     
     def add_file_to_model(self, analysis_data):
         """Add a file analysis result to the model"""
@@ -391,8 +396,9 @@ class FileOrganizerGUI(QMainWindow):
         edit_action.triggered.connect(lambda: self.edit_cell(index))
         menu.addAction(edit_action)
         
-        if self.file_view.viewport():
-            menu.exec(self.file_view.viewport().mapToGlobal(position))
+        viewport = self.file_view.viewport()
+        if viewport is not None:
+            menu.exec(viewport.mapToGlobal(position))
     
     def edit_cell(self, index):
         """Edit a cell in the file list"""
@@ -448,11 +454,17 @@ class FileOrganizerGUI(QMainWindow):
             if checkbox_item and checkbox_item.checkState() == Qt.CheckState.Checked:
                 if row < len(self.analyzed_files):
                     # Get updated values from the model
-                    new_filename = self.file_model.item(row, 2).text()
-                    destination_folder = self.file_model.item(row, 3).text()
-                    identity = self.file_model.item(row, 4).text()
-                    date = self.file_model.item(row, 5).text()
-                    description = self.file_model.item(row, 6).text()
+                    new_filename_item = self.file_model.item(row, 2)
+                    destination_folder_item = self.file_model.item(row, 3)
+                    identity_item = self.file_model.item(row, 4)
+                    date_item = self.file_model.item(row, 5)
+                    description_item = self.file_model.item(row, 6)
+
+                    new_filename = new_filename_item.text() if new_filename_item else ""
+                    destination_folder = destination_folder_item.text() if destination_folder_item else ""
+                    identity = identity_item.text() if identity_item else ""
+                    date = date_item.text() if date_item else ""
+                    description = description_item.text() if description_item else ""
                     
                     file_data = self.analyzed_files[row].copy()
                     file_data.update({
@@ -463,7 +475,7 @@ class FileOrganizerGUI(QMainWindow):
                         'description': description
                     })
                     selected_files.append(file_data)
-        
+                           
         if not selected_files:
             QMessageBox.warning(self, "No Files Selected", "Please select files to process.")
             return
@@ -568,7 +580,7 @@ def main():
         # Initialize components
         document_processor = DocumentProcessor()
         llm_analyzer = LLMAnalyzer()
-        file_handler = FileHandler()
+        file_handler = FileHandler(base_output_dir=r"E:\scanned documents")
         
         # Create and show GUI
         window = FileOrganizerGUI(document_processor, llm_analyzer, file_handler)

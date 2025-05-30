@@ -1,0 +1,9 @@
+
+PyQt6
+langchain
+langchain-community
+langchain-ollama
+pypdf
+pytesseract
+Pillow
+ollama

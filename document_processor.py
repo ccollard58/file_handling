@@ -18,7 +18,7 @@ class DocumentProcessor:
         try:
             if file_ext == '.pdf':
                 return self._extract_text_from_pdf(file_path)
-            elif file_ext in ['.jpg', '.jpeg', '.png', '.gif']:
+            elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.tiff', '.tif']:
                 return self._extract_text_from_image(file_path)
             else:
                 logging.warning(f"Unsupported file format: {file_ext}")
@@ -36,8 +36,7 @@ class DocumentProcessor:
                 page_text = page.extract_text()
                 if page_text:
                     text += page_text
-            
-            # If no text was extracted, try OCR
+              # If no text was extracted, try OCR
             if not text.strip():
                 logging.info(f"No text found in PDF, attempting OCR: {file_path}")
                 text = self._perform_ocr_on_pdf(file_path)
@@ -52,11 +51,38 @@ class DocumentProcessor:
         try:
             image = Image.open(file_path)
 
-            # Convert GIF to RGB mode if necessary
+            # Handle specific image formats
             if image.format == 'GIF':
                 image = image.convert('RGB')
+            
+            # Special handling for TIFF images, which can sometimes cause OCR issues
+            if file_path.lower().endswith(('.tif', '.tiff')):
+                # Convert to RGB if needed
+                if image.mode not in ('RGB', 'L'):
+                    image = image.convert('RGB')
+                
+                # Log the TIFF processing
+                logging.info(f"Processing TIFF image: {file_path}, mode: {image.mode}, size: {image.size}")
+                
+                # Some TIFF files might benefit from image enhancement for OCR
+                # We'll keep it simple but effective
+                try:
+                    from PIL import ImageEnhance
+                    # Increase contrast slightly to help OCR
+                    enhancer = ImageEnhance.Contrast(image)
+                    image = enhancer.enhance(1.5)  # Boost contrast by 50%
+                except Exception as e:
+                    logging.warning(f"Could not enhance TIFF image: {str(e)}")
 
             text = pytesseract.image_to_string(image)
+            
+            # For image files, add logging to help diagnose OCR issues
+            if text.strip():
+                text_preview = text.strip()[:50] + ('...' if len(text.strip()) > 50 else '')
+                logging.info(f"OCR extracted {len(text.strip())} chars from {file_path}: {text_preview}")
+            else:
+                logging.info(f"OCR extracted no text from {file_path}")
+                
             return text
         except Exception as e:
             logging.error(f"Error processing image {file_path}: {str(e)}")

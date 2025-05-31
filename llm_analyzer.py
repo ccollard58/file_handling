@@ -25,12 +25,28 @@ class LLMAnalyzer:
         Returns:
             dict: Contains identity, date, description, and category
         """
-        # Check if this is an image file with insufficient text
-        is_image_file = filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff'))
+        # Check if this is an image file
+        is_image_file = filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif'))
+        
+        # Check if OCR text is insufficient or likely just noise
         has_insufficient_text = not text or len(text.strip()) < 10
         
-        if has_insufficient_text and is_image_file and file_path:
-            logging.info(f"Insufficient OCR text for image {filename}, attempting visual analysis")
+        # Additional check for .tif files and other images that might return noisy OCR
+        is_likely_noise = False
+        if is_image_file and text and len(text.strip()) < 50:
+            # Count ratio of alphanumeric characters vs. total non-whitespace characters
+            non_whitespace = len(text.strip())
+            alphanumeric = sum(c.isalnum() for c in text)
+            # If less than 40% of characters are alphanumeric, likely noise
+            is_likely_noise = (alphanumeric / non_whitespace) < 0.4 if non_whitespace > 0 else True
+            
+            # Specific handling for .tif files which often need visual analysis
+            if filename.lower().endswith(('.tif', '.tiff')) and len(text.strip()) < 30:
+                is_likely_noise = True
+                logging.info(f".tif/.tiff file {filename} detected with minimal text, preferring visual analysis")
+        
+        if (has_insufficient_text or is_likely_noise) and is_image_file and file_path:
+            logging.info(f"Insufficient or noisy OCR text for image {filename}, attempting visual analysis")
             try:
                 return self._analyze_image_visually(file_path, filename, creation_date)
             except Exception as e:
@@ -122,7 +138,7 @@ Based on what you can see in this image, respond in JSON format:
         else:
             # For image files, default to Photographs unless there are clear document indicators
             file_ext = os.path.splitext(filename)[1].lower()
-            if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff']:
+            if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif']:
                 category = "Photographs"
             else:
                 category = "Other"

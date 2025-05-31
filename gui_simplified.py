@@ -267,11 +267,10 @@ class FileOrganizerGUI(QMainWindow):
     
     def get_all_files_in_folder(self):
         """Get all supported files in the current folder"""
-        if not self.current_folder:
-            return []
+        if not self.current_folder:        return []
         
         all_files = []
-        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff']
+        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif']
         
         for root, _, files in os.walk(self.current_folder):
             for file in files:
@@ -404,11 +403,11 @@ class FileOrganizerGUI(QMainWindow):
             self.preview_text.setText(f"File not found: {file_path}")
             self.preview_image_label.setVisible(False)
             return
-            
+        
         file_ext = os.path.splitext(file_path)[1].lower()
         
         # Handle image files
-        if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff']:
+        if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif']:
             try:
                 # Load image and create a thumbnail
                 pixmap = QPixmap(file_path)

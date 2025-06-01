@@ -36,5 +36,4 @@ The script will:
 You can adjust the following parameters in the script:
 
 - `sample_size`: Number of documents to analyze (default: 100)
-- `max_workers`: Number of concurrent analysis threads (default: 4)
 - `supported_extensions`: File types to include in analysis

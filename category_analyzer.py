@@ -1,14 +1,20 @@
+"""
+Category Analyzer Tool
+
+This script analyzes documents in a corpus to suggest improved categories.
+"""
+
 import os
 import sys
+import re
 import random
 import logging
 import json
 from datetime import datetime
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from llm_analyzer import LLMAnalyzer
-from langchain_ollama import OllamaLLM
+from document_processor import DocumentProcessor
 
 # Configure logging
 logging.basicConfig(
@@ -21,29 +27,17 @@ logging.basicConfig(
 )
 
 class CategoryAnalyzer:
-    def __init__(self, source_dir, sample_size=100, max_workers=4):
-        """
-        Initialize the category analyzer.
-        
-        Args:
-            source_dir (str): Path to the document corpus
-            sample_size (int): Number of documents to sample for analysis
-            max_workers (int): Maximum number of concurrent workers for analysis
-        """
+    def __init__(self, source_dir, sample_size=1000):
+        """Initialize the category analyzer."""
         self.source_dir = source_dir
         self.sample_size = sample_size
-        self.max_workers = max_workers
         self.llm_analyzer = LLMAnalyzer()
+        self.document_processor = DocumentProcessor()
         self.supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.docx', '.doc', '.txt']
         self.existing_categories = ["Medical Documents", "Receipts", "Contracts", "Photographs", "Other"]
         
-        # For direct LLM calls without using the analyzer
-        try:
-            # self.llm = OllamaLLM(model="gemma3:27b-it-fp16")
-            self.llm = OllamaLLM(model="qwq:32b-fp16")
-        except Exception as e:
-            logging.error(f"Error initializing LLM: {str(e)}")
-            self.llm = None
+        # Use the same LLM instance from the analyzer for category suggestions
+        self.llm = self.llm_analyzer.llm
     
     def get_all_files(self):
         """Get all files in the source directory matching supported extensions."""
@@ -62,7 +56,7 @@ class CategoryAnalyzer:
         if len(all_files) <= self.sample_size:
             return all_files
         
-        # Ensure we get a mix of file types and folders
+        # Strategy: get a mix of file types and folders
         samples_by_ext = defaultdict(list)
         samples_by_folder = defaultdict(list)
         
@@ -73,19 +67,18 @@ class CategoryAnalyzer:
             samples_by_ext[ext].append(file_path)
             samples_by_folder[folder].append(file_path)
         
-        # Strategy: take a stratified sample across extensions and folders
         sample = []
         
-        # First, ensure we have at least one file from each extension type
+        # Get at least one file from each extension type
         for ext, files in samples_by_ext.items():
             sample.append(random.choice(files))
         
-        # Then, ensure we have at least one file from each folder
+        # Get at least one file from each folder
         for folder, files in samples_by_folder.items():
             if not any(f in sample for f in files):
                 sample.append(random.choice(files))
         
-        # Fill the rest randomly until we reach the sample size
+        # Fill the rest randomly
         remaining_files = [f for f in all_files if f not in sample]
         random.shuffle(remaining_files)
         sample.extend(remaining_files[:self.sample_size - len(sample)])
@@ -99,9 +92,8 @@ class CategoryAnalyzer:
             filename = os.path.basename(file_path)
             creation_time = datetime.fromtimestamp(os.path.getctime(file_path))
             
-            # For simplicity in this script, we'll skip text extraction
-            # and rely on image analysis for all files
-            text = ""  # We'll rely on visual analysis for images
+            # Extract text from the file using the document processor
+            text = self.document_processor.extract_text(file_path)
             
             result = self.llm_analyzer.analyze_document(text, filename, creation_time, file_path)
             
@@ -115,44 +107,22 @@ class CategoryAnalyzer:
             return None
     
     def analyze_sample(self, sample_files):
-        """Analyze a sample of files concurrently."""
+        """Analyze a sample of files serially to avoid multiple Ollama requests."""
         results = []
         
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_file = {executor.submit(self.analyze_file, file): file for file in sample_files}
-            
-            for future in as_completed(future_to_file):
-                file = future_to_file[future]
-                try:
-                    result = future.result()
-                    if result:
-                        results.append(result)
-                        logging.info(f"Analyzed {file}: {result['category']}")
-                except Exception as e:
-                    logging.error(f"Exception analyzing {file}: {str(e)}")
+        for file in sample_files:
+            try:
+                result = self.analyze_file(file)
+                if result:
+                    results.append(result)
+                    logging.info(f"Analyzed {file}: {result['category']}")
+            except Exception as e:
+                logging.error(f"Exception analyzing {file}: {str(e)}")
         
         return results
     
-    def extract_existing_categories(self, analysis_results):
-        """Extract categories from analysis results."""
-        categories = Counter()
-        folder_categories = defaultdict(list)
-        
-        for result in analysis_results:
-            categories[result["category"]] += 1
-            folder_categories[result["parent_folder"]].append(result["category"])
-        
-        logging.info(f"Current category distribution: {categories}")
-        logging.info(f"Folder to category mapping: {dict(folder_categories)}")
-        
-        return categories, folder_categories
-    
     def suggest_categories(self, analysis_results):
         """Use LLM to suggest improved categories based on analysis results."""
-        if not self.llm:
-            logging.error("LLM not initialized, cannot suggest categories")
-            return self.existing_categories
-        
         # Extract current categories and sample document descriptions
         current_categories = [result["category"] for result in analysis_results]
         descriptions = [result["description"] for result in analysis_results]
@@ -199,6 +169,7 @@ class CategoryAnalyzer:
         """
         
         try:
+            logging.info("Sending category suggestion prompt to LLM")
             response = self.llm.invoke(prompt)
             logging.info("LLM category suggestion response received")
             
@@ -207,8 +178,6 @@ class CategoryAnalyzer:
             if json_match:
                 json_str = json_match.group(1) if json_match.group(1) else json_match.group(0)
                 suggestions = json.loads(json_str)
-                
-                logging.info(f"Suggested categories: {[cat['name'] for cat in suggestions['categories']]}")
                 return suggestions
             else:
                 logging.warning("Could not parse JSON from LLM response")
@@ -228,19 +197,24 @@ class CategoryAnalyzer:
         # Analyze the sample
         analysis_results = self.analyze_sample(sample_files)
         
-        # Extract existing categories
-        categories, folder_categories = self.extract_existing_categories(analysis_results)
-        
         # Get category suggestions
         suggested_categories = self.suggest_categories(analysis_results)
         
         # Save results
-        self.save_results(categories, folder_categories, suggested_categories)
+        self.save_results(analysis_results, suggested_categories)
         
         return suggested_categories
     
-    def save_results(self, categories, folder_categories, suggested_categories):
+    def save_results(self, analysis_results, suggested_categories):
         """Save analysis results to file."""
+        # Compute category distribution
+        categories = Counter()
+        folder_categories = defaultdict(list)
+        
+        for result in analysis_results:
+            categories[result["category"]] += 1
+            folder_categories[result["parent_folder"]].append(result["category"])
+        
         results = {
             "analysis_timestamp": datetime.now().isoformat(),
             "current_categories": dict(categories),
@@ -255,8 +229,6 @@ class CategoryAnalyzer:
 
 
 if __name__ == "__main__":
-    import re  # Import re at the top level for JSON parsing
-    
     # Default source directory
     source_dir = r"E:\Dropbox\Admin\Scanned Documents"
     
@@ -264,18 +236,20 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         source_dir = sys.argv[1]
     
-    # Adjust sample size based on expected corpus size
-    sample_size = 100
-    
+    # Create and run the analyzer
+    sample_size = 1000
     analyzer = CategoryAnalyzer(source_dir, sample_size)
     suggested_categories = analyzer.run_analysis()
     
     print("\nSuggested Document Categories:")
     print("=============================")
     
-    for cat in suggested_categories["categories"]:
-        print(f"\n{cat['name']}")
-        print(f"  Description: {cat['description']}")
-        print(f"  Examples: {', '.join(cat['examples'])}")
+    if "categories" in suggested_categories:
+        for cat in suggested_categories["categories"]:
+            print(f"\n{cat['name']}")
+            print(f"  Description: {cat['description']}")
+            print(f"  Examples: {', '.join(cat['examples'])}")
+    else:
+        print("\nNo categories were suggested. Check the logs for details.")
     
     print("\nComplete analysis results saved to category_analysis_results.json")

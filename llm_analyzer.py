@@ -13,8 +13,8 @@ class LLMAnalyzer:
         try:
             # Use the same model from the notebook that works with images
             # self.llm = OllamaLLM(model="gemma3:27b-it-fp16")
-            # self.llm = OllamaLLM(model="deepseek-r1:8b-0528-qwen3-fp16", temperature=0.6)
-            self.llm = OllamaLLM(model="qwq:32b-q8_0", temperature=0.6)
+            self.llm = OllamaLLM(model="deepseek-r1:8b-0528-qwen3-fp16", temperature=0.6)
+            # self.llm = OllamaLLM(model="qwq:32b-q8_0", temperature=0.6)
             # self.llm = OllamaLLM(model="phi4:14b-q8_0", temperature=0.2)
             logging.info("LLM initialized successfully")
         except Exception as e:
@@ -83,33 +83,36 @@ class LLMAnalyzer:
         try:
             # Create prompt for visual analysis
             prompt = """Analyze this image to extract document information. Look for:
-1. Any visible text or names (especially "Chuck Collard", "Charles Collard", "Charles W Collard", "Colleen McGinnis", or "Colleen Collard")
-2. What type of document this appears to be
-3. Any visible dates
-4. A brief descriptive title for the document (5 words or less)
+             1. Any visible text or names (especially "Chuck Collard", "Charles Collard", "Charles W Collard", "Colleen McGinnis", or "Colleen Collard")
+             2. What type of document this appears to be
+             3. Any visible dates
+             4. A brief descriptive title for the document (5 words or less)
 
-For the category, suggest the BEST category name that describes what type of document this is.
-Don't limit yourself to predefined categories - use your judgment to suggest the most appropriate category name.
+             For the category, suggest the BEST category name that describes what type of document this is. Use one of the following categories:
++            Examples of categories:
++- "Medical" for health and wellness records (prescriptions, lab results, imaging reports)
++- "Identification" for IDs and vital records (passports, driver's licenses, birth certificates)
++- "Home" for residence documents (mortgage papers, utilities, property tax)
++- "Auto" for vehicle documents (car titles, maintenance records, registrations)
++- "SysAdmin" for technical and software docs (licenses, manuals, network configs)
++- "School" for academic records (transcripts, degree certificates)
++- "Cooking" for recipes and meal plans
++- "Financial" for income and expense records (bank statements, tax documents, invoices)
++- "Travel" for trip-related docs (itineraries, tickets, reservations)
++- "Employment" for work-related documents (contracts, pay stubs, benefits forms)
++- "Photography" for photo albums and media releases
++- "Hobbies" for personal hobby guides and patterns
++- "Memories" for memorabilia documents (letters, ticket stubs, notes)
++- "Other" for any documents that don't fit above categories
 
-Examples of good category names:
-- "Personal Photos" for family pictures, vacation photos, portraits
-- "Medical Records" for health-related documents, prescriptions, lab results
-- "Financial Documents" for bank statements, tax forms, financial records
-- "Insurance" for insurance policies and claims
-- "Legal Documents" for contracts, wills, agreements  
-- "Receipts" for purchase receipts and invoices
-- "Travel Documents" for tickets, itineraries, travel info
-- "Home & Property" for house-related documents
-- "Employment" for work-related papers
-
-Based on what you can see in this image, respond in JSON format:
-{
-    "identity": "your guess here (Chuck or Colleen or Unknown)",
-    "description": "Brief descriptive title",
-    "category": "Your best category suggestion here",
-    "visible_text": "Any text you can clearly read",
-    "document_type": "What type of document this appears to be"
-}"""
+ Based on what you can see in this image, respond in JSON format:
+             {
+                 "identity": "your guess here (Chuck or Colleen or Unknown)",
+                 "description": "Brief descriptive title",
+                 "category": "Your best category suggestion here",
+                 "visible_text": "Any text you can clearly read",
+                 "document_type": "What type of document this appears to be"
+             }"""
             
             # Use the file path directly with the images parameter (like in the notebook)
             response = self.llm.invoke(prompt, images=[str(file_path)])
@@ -140,28 +143,37 @@ Based on what you can see in this image, respond in JSON format:
     
     def _create_image_fallback_result(self, filename, creation_date):
         """Create a fallback result for images when visual analysis fails."""
-        # Try to infer category from filename
+        # Try to infer category from filename based on user-defined categories
         filename_lower = filename.lower()
         
-        if any(word in filename_lower for word in ['medical', 'doctor', 'prescription', 'hospital', 'clinic', 'health']):
-            category = "Medical Records"
-        elif any(word in filename_lower for word in ['receipt', 'invoice', 'bill', 'purchase', 'store', 'shop']):
-            category = "Receipts"
-        elif any(word in filename_lower for word in ['contract', 'agreement', 'legal', 'policy', 'terms']):
-            category = "Legal Documents"
-        elif any(word in filename_lower for word in ['insurance', 'claim', 'policy', 'coverage']):
-            category = "Insurance"
-        elif any(word in filename_lower for word in ['bank', 'statement', 'financial', 'tax', 'irs']):
-            category = "Financial Documents"
-        elif any(word in filename_lower for word in ['photo', 'pic', 'img', 'image', 'portrait', 'family', 'vacation', 'selfie', 'snapshot']):
-            category = "Personal Photos"
+        if any(word in filename_lower for word in ['medical', 'prescription', 'lab', 'clinic', 'health', 'imaging']):
+            category = "Medical"
+        elif any(word in filename_lower for word in ['passport', 'license', 'id', 'birth', 'social']):
+            category = "Identification"
+        elif any(word in filename_lower for word in ['home', 'mortgage', 'utilities', 'tax', 'property', 'electricity', 'cable']):
+            category = "Home"
+        elif any(word in filename_lower for word in ['car', 'auto', 'vehicle', 'registration', 'repair', 'title']):
+            category = "Auto"
+        elif any(word in filename_lower for word in ['software', 'license', 'manual', 'warranty', 'network', 'config', 'technical']):
+            category = "SysAdmin"
+        elif any(word in filename_lower for word in ['degree', 'transcript', 'course', 'student', 'training']):
+            category = "School"
+        elif any(word in filename_lower for word in ['recipe', 'cookbook', 'meal', 'diet']):
+            category = "Cooking"
+        elif any(word in filename_lower for word in ['bank', 'statement', 'invoice', 'tax', 'paystub', 'w2', 'payment']):
+            category = "Financial"
+        elif any(word in filename_lower for word in ['itinerary', 'ticket', 'boarding', 'hotel', 'trip', 'tourism', 'reservation']):
+            category = "Travel"
+        elif any(word in filename_lower for word in ['employment', 'contract', 'pay', 'benefit', 'review']):
+            category = "Employment"
+        elif any(word in filename_lower for word in ['photo', 'album', 'media', 'image', 'portrait']):
+            category = "Photography"
+        elif any(word in filename_lower for word in ['diy', 'guide', 'craft', 'hobby', 'pattern']):
+            category = "Hobbies"
+        elif any(word in filename_lower for word in ['letter', 'note', 'ticket', 'stub', 'memory', 'memories']):
+            category = "Memories"
         else:
-            # For image files, default to Personal Photos unless there are clear document indicators
-            file_ext = os.path.splitext(filename)[1].lower()
-            if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif']:
-                category = "Personal Photos"
-            else:
-                category = "Documents"
+            category = "Other"
         
         # Extract base filename without extension for description
         base_name = os.path.splitext(filename)[0]
@@ -269,28 +281,30 @@ Based on what you can see in this image, respond in JSON format:
             template="""
             Analyze the following document text and filename to:
             1. Create a brief descriptive title (5 words or less)
-            2. Suggest the BEST category name that describes what type of document this is
+            2. Suggest the BEST category name for this document using one of the defined categories below:
             
-            For the category, think about what would be the most intuitive and useful category name for organizing this document. 
-            Don't limit yourself to predefined categories - use your judgment to suggest the most appropriate category name.
-            
-            Examples of good category names:
-            - "Medical Records" for health-related documents
-            - "Financial Documents" for bank statements, tax forms
-            - "Insurance" for insurance policies and claims
-            - "Legal Documents" for contracts, wills, agreements
-            - "Receipts" for purchase receipts and invoices
-            - "Personal Photos" for family pictures
-            - "Travel Documents" for tickets, itineraries
-            - "Home & Property" for house-related documents
-            - "Employment" for work-related papers
+            Categories available:
++- "Medical": health and wellness records (prescriptions, lab results, imaging reports)
++- "Identification": passports, driver's licenses, birth certificates
++- "Home": mortgage papers, utilities, property tax documents
++- "Auto": car titles, maintenance records, registrations
++- "SysAdmin": software licenses, technical manuals, network configs
++- "School": transcripts, degree certificates
++- "Cooking": recipes, meal plans
++- "Financial": bank statements, tax documents, invoices
++- "Travel": itineraries, tickets, reservations
++- "Employment": contracts, pay stubs, benefits forms
++- "Photography": photo albums, media releases
++- "Hobbies": DIY guides, craft patterns
++- "Memories": letters, ticket stubs, personal notes
++- "Other": documents that don't fit above categories
             
             Document filename: {filename}
             Document text (partial):
             {text}
             
             Respond in JSON format:
-            {{"description": "Brief title here", "category": "Your best category suggestion here"}}
+            {{"description": "Brief title here", "category": "One of the categories above"}}
             """
         )
         

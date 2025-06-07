@@ -1,4 +1,3 @@
-
 PyQt6
 langchain
 langchain-community
@@ -6,4 +5,14 @@ langchain-ollama
 pypdf
 pytesseract
 Pillow
-ollama
+pandas
+tesseract
+plotly
+networkx
+numpy
+matplotlib
+seaborn
+nbformat
+python-docx
+openpyxl
+pywin32

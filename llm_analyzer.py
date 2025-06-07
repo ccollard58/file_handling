@@ -2,6 +2,7 @@ import re
 import os
 import logging
 import json
+import tempfile
 from datetime import datetime
 from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
@@ -13,9 +14,9 @@ class LLMAnalyzer:
         try:
             # Use the same model from the notebook that works with images
             # self.llm = OllamaLLM(model="gemma3:27b-it-fp16")
-            self.llm = OllamaLLM(model="deepseek-r1:8b-0528-qwen3-fp16", temperature=0.6)
+            # self.llm = OllamaLLM(model="deepseek-r1:8b-0528-qwen3-fp16", temperature=0.6)
             # self.llm = OllamaLLM(model="qwq:32b-q8_0", temperature=0.6)
-            # self.llm = OllamaLLM(model="phi4:14b-q8_0", temperature=0.2)
+            self.llm = OllamaLLM(model="phi4:14b-fp16", temperature=0.2)
             logging.info("LLM initialized successfully")
         except Exception as e:
             logging.error(f"Error initializing LLM: {str(e)}")
@@ -28,32 +29,72 @@ class LLMAnalyzer:
         Returns:
             dict: Contains identity, date, description, and category
         """
-        # Check if this is an image file
+        # Check if this is an image file or PDF
         is_image_file = filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif'))
+        is_pdf_file = filename.lower().endswith('.pdf')
         
         # Check if OCR text is insufficient or likely just noise
         has_insufficient_text = not text or len(text.strip()) < 10
         
-        # Additional check for .tif files and other images that might return noisy OCR
+        # Additional check for files that might return noisy OCR or be primarily visual
         is_likely_noise = False
-        if is_image_file and text and len(text.strip()) < 50:
+        is_likely_visual_content = False
+        
+        # Enhanced detection for visual content files
+        if text and len(text.strip()) < 100:  # Expanded threshold for better detection
             # Count ratio of alphanumeric characters vs. total non-whitespace characters
             non_whitespace = len(text.strip())
             alphanumeric = sum(c.isalnum() for c in text)
             # If less than 40% of characters are alphanumeric, likely noise
             is_likely_noise = (alphanumeric / non_whitespace) < 0.4 if non_whitespace > 0 else True
             
-            # Specific handling for .tif files which often need visual analysis
-            if filename.lower().endswith(('.tif', '.tiff')) and len(text.strip()) < 30:
-                is_likely_noise = True
-                logging.info(f".tif/.tiff file {filename} detected with minimal text, preferring visual analysis")
+            # Check for common indicators of visual content (greeting cards, handwritten notes, etc.)
+            text_lower = text.lower()
+            visual_indicators = [
+                'greeting', 'card', 'birthday', 'anniversary', 'wedding', 'congratulations',
+                'handwritten', 'signature', 'note', 'letter', 'photo', 'picture', 'image',
+                'art', 'drawing', 'sketch', 'illustration', 'certificate', 'diploma',
+                'memorial', 'memory', 'poem', 'verse', 'dedication'
+            ]
+            
+            # Also check filename for visual content hints
+            filename_lower = filename.lower()
+            visual_filename_hints = [
+                'greeting', 'card', 'photo', 'image', 'art', 'picture', 'handwritten',
+                'note', 'letter', 'memorial', 'certificate', 'diploma', 'poem'
+            ]
+            
+            # Check if text contains visual content indicators
+            text_has_visual_hints = any(indicator in text_lower for indicator in visual_indicators)
+            filename_has_visual_hints = any(hint in filename_lower for hint in visual_filename_hints)
+            
+            if text_has_visual_hints or filename_has_visual_hints:
+                is_likely_visual_content = True
+                logging.info(f"Detected likely visual content in {filename} based on text/filename analysis")
         
-        if (has_insufficient_text or is_likely_noise) and is_image_file and file_path:
-            logging.info(f"Insufficient or noisy OCR text for image {filename}, attempting visual analysis")
-            try:
-                return self._analyze_image_visually(file_path, filename, creation_date)
-            except Exception as e:
-                logging.error(f"Error in visual image analysis for {filename}: {str(e)}")
+        # Specific handling for .tif files which often need visual analysis
+        if filename.lower().endswith(('.tif', '.tiff')) and len(text.strip()) < 30:
+            is_likely_noise = True
+            logging.info(f".tif/.tiff file {filename} detected with minimal text, preferring visual analysis")
+        
+        # Handle insufficient text or visual content with file path available
+        if (has_insufficient_text or is_likely_noise or is_likely_visual_content) and file_path:
+            if is_image_file:
+                logging.info(f"Insufficient/noisy OCR text or visual content detected for image {filename}, attempting visual analysis")
+                try:
+                    return self._analyze_image_visually(file_path, filename, creation_date)
+                except Exception as e:
+                    logging.error(f"Error in visual analysis for {filename}: {str(e)}")
+                    return self._create_default_result(filename, creation_date)
+            elif is_pdf_file:
+                logging.info(f"Insufficient/noisy OCR text or visual content detected for PDF {filename}, attempting visual analysis")
+                try:
+                    return self._analyze_pdf_visually(file_path, filename, creation_date)
+                except Exception as e:
+                    logging.error(f"Error in visual PDF analysis for {filename}: {str(e)}")
+                    return self._create_default_result(filename, creation_date)
+            else:
+                logging.warning(f"Insufficient text to analyze for {filename}")
                 return self._create_default_result(filename, creation_date)
         elif has_insufficient_text:
             logging.warning(f"Insufficient text to analyze for {filename}")
@@ -89,21 +130,21 @@ class LLMAnalyzer:
              4. A brief descriptive title for the document (5 words or less)
 
              For the category, suggest the BEST category name that describes what type of document this is. Use one of the following categories:
-+            Examples of categories:
-+- "Medical" for health and wellness records (prescriptions, lab results, imaging reports)
-+- "Identification" for IDs and vital records (passports, driver's licenses, birth certificates)
-+- "Home" for residence documents (mortgage papers, utilities, property tax)
-+- "Auto" for vehicle documents (car titles, maintenance records, registrations)
-+- "SysAdmin" for technical and software docs (licenses, manuals, network configs)
-+- "School" for academic records (transcripts, degree certificates)
-+- "Cooking" for recipes and meal plans
-+- "Financial" for income and expense records (bank statements, tax documents, invoices)
-+- "Travel" for trip-related docs (itineraries, tickets, reservations)
-+- "Employment" for work-related documents (contracts, pay stubs, benefits forms)
-+- "Photography" for photo albums and media releases
-+- "Hobbies" for personal hobby guides and patterns
-+- "Memories" for memorabilia documents (letters, ticket stubs, notes)
-+- "Other" for any documents that don't fit above categories
+             Examples of categories:
+- "Medical" for health and wellness records (prescriptions, lab results, imaging reports)
+- "Identification" for IDs and vital records (passports, driver's licenses, birth certificates)
+- "Home" for residence documents (mortgage papers, utilities, property tax)
+- "Auto" for vehicle documents (car titles, maintenance records, registrations)
+- "SysAdmin" for technical and software docs (licenses, manuals, network configs)
+- "School" for academic records (transcripts, degree certificates)
+- "Cooking" for recipes and meal plans
+- "Financial" for income and expense records (bank statements, tax documents, invoices)
+- "Travel" for trip-related docs (itineraries, tickets, reservations)
+- "Employment" for work-related documents (contracts, pay stubs, benefits forms)
+- "Photography" for photo albums and media releases
+- "Hobbies" for personal hobby guides and patterns
+- "Memories" for memorabilia documents (letters, ticket stubs, notes, greeting cards)
+- "Other" for any documents that don't fit above categories
 
  Based on what you can see in this image, respond in JSON format:
              {
@@ -141,6 +182,107 @@ class LLMAnalyzer:
             logging.error(f"Error in visual image analysis: {str(e)}")
             return self._create_image_fallback_result(filename, creation_date)
     
+    def _analyze_pdf_visually(self, file_path, filename, creation_date):
+        """Analyze a PDF file visually using LLM by extracting page images."""
+        try:
+            import fitz  # PyMuPDF
+            
+            # Create prompt for PDF visual analysis
+            prompt = """Analyze this PDF document to extract information. This appears to be a PDF containing primarily photos, handwritten notes, greeting cards, or visual content rather than standard text. Look for:
+             1. Any visible text or names (especially "Chuck Collard", "Charles Collard", "Charles W Collard", "Colleen McGinnis", or "Colleen Collard")
+             2. What type of document this appears to be (greeting card, handwritten note, photo, certificate, etc.)
+             3. Any visible dates
+             4. A brief descriptive title for the document (5 words or less)
+             5. Special occasions or sentiments (birthday, anniversary, congratulations, memorial, etc.)
+
+             For the category, suggest the BEST category name that describes what type of document this is. Pay special attention to:
+             - Greeting cards, birthday cards, holiday cards → "Memories" or "Personal Cards"
+             - Handwritten notes, letters, personal messages → "Memories" or "Personal Correspondence"
+             - Photos or photo albums → "Photography"
+             - Certificates or awards → "Official Documents" or appropriate category
+             - Art or drawings → "Hobbies" or "Personal Art"
+
+             Examples of categories:
+- "Memories": greeting cards, handwritten notes, personal letters, memorabilia
+- "Photography": photos, photo albums, image collections
+- "Identification": certificates, licenses, official IDs
+- "Medical": health records, prescriptions
+- "Financial": bank statements, tax documents
+- "Home": property documents, utilities
+- "Other": for documents that don't fit above categories
+
+ Based on what you can see in this PDF, respond in JSON format:
+             {
+                 "identity": "your guess here (Chuck or Colleen or Unknown)",
+                 "description": "Brief descriptive title",
+                 "category": "Your best category suggestion here",
+                 "visible_text": "Any text you can clearly read",
+                 "document_type": "What type of document this appears to be",
+                 "special_occasion": "Any special occasion or sentiment detected"
+             }"""
+            
+            # Open PDF and convert first page to image for analysis
+            pdf_document = fitz.open(file_path)
+            if len(pdf_document) > 0:
+                page = pdf_document.load_page(0)  # First page                # Convert to image with good resolution
+                mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better quality
+                pix = page.getPixmap(matrix=mat)                # Save temporarily for LLM analysis
+                import time
+                temp_image_path = tempfile.mktemp(suffix='.png')
+                pix.writePNG(temp_image_path)
+                
+                pdf_document.close()
+                
+                try:
+                    # Analyze the image with LLM
+                    response = self.llm.invoke(prompt, images=[str(temp_image_path)])
+                    logging.info(f"LLM response for PDF {filename}: {response}")
+                    
+                    # Try to extract JSON from response
+                    json_match = re.search(r'{.*}', response, re.DOTALL)
+                    if json_match:
+                        result = json.loads(json_match.group(0))
+                        
+                        # Extract date from filename or use creation date
+                        date = self._extract_date("", filename, creation_date)
+                        
+                        # Enhance description with special occasion if detected
+                        description = result.get("description", "PDF Document")
+                        special_occasion = result.get("special_occasion", "")
+                        if special_occasion and special_occasion.lower() not in description.lower():
+                            description = f"{special_occasion} - {description}"
+                        
+                        return {
+                            "identity": result.get("identity", "Unknown"),
+                            "date": date,
+                            "description": description[:50],  # Limit length
+                            "category": result.get("category", "Uncategorized")
+                        }
+                    else:
+                        # Fallback if JSON parsing fails
+                        logging.warning(f"Could not parse LLM response for PDF {filename}")
+                        return self._create_pdf_fallback_result(filename, creation_date)
+                        
+                finally:
+                    # Clean up temp file with retry
+                    for attempt in range(3):
+                        try:
+                            time.sleep(0.1)  # Small delay to let OS release file handle
+                            os.unlink(temp_image_path)
+                            break
+                        except Exception as cleanup_error:
+                            if attempt == 2:  # Last attempt
+                                logging.warning(f"Could not delete temporary file {temp_image_path}: {cleanup_error}")
+                            else:
+                                time.sleep(0.5)  # Wait longer before retry
+            else:
+                logging.warning(f"PDF {filename} has no pages")
+                return self._create_pdf_fallback_result(filename, creation_date)
+                
+        except Exception as e:
+            logging.error(f"Error in visual PDF analysis: {str(e)}")
+            return self._create_pdf_fallback_result(filename, creation_date)
+    
     def _create_image_fallback_result(self, filename, creation_date):
         """Create a fallback result for images when visual analysis fails."""
         # Try to infer category from filename based on user-defined categories
@@ -170,8 +312,51 @@ class LLMAnalyzer:
             category = "Photography"
         elif any(word in filename_lower for word in ['diy', 'guide', 'craft', 'hobby', 'pattern']):
             category = "Hobbies"
-        elif any(word in filename_lower for word in ['letter', 'note', 'ticket', 'stub', 'memory', 'memories']):
+        elif any(word in filename_lower for word in ['letter', 'note', 'ticket', 'stub', 'memory', 'memories', 'greeting', 'card']):
             category = "Memories"
+        else:
+            category = "Other"
+        
+        # Extract base filename without extension for description
+        base_name = os.path.splitext(filename)[0]
+        # Clean up the filename for a better description
+        description = base_name.replace('_', ' ').replace('-', ' ').title()
+        if len(description) > 30:
+            description = description[:30] + "..."
+        
+        return {
+            "identity": "Unknown",
+            "date": creation_date.strftime('%Y-%m-%d'),
+            "description": description,
+            "category": category
+        }
+
+    def _create_pdf_fallback_result(self, filename, creation_date):
+        """Create a fallback result for PDFs when visual analysis fails."""
+        # Try to infer category from filename with enhanced keywords for greeting cards and handwritten notes
+        filename_lower = filename.lower()
+        
+        # Enhanced detection for greeting cards and personal content
+        if any(word in filename_lower for word in ['greeting', 'card', 'birthday', 'anniversary', 'congratulations', 'holiday', 'christmas', 'valentine']):
+            category = "Memories"
+        elif any(word in filename_lower for word in ['handwritten', 'note', 'letter', 'personal', 'message', 'memo']):
+            category = "Memories"
+        elif any(word in filename_lower for word in ['photo', 'image', 'picture', 'album', 'portrait']):
+            category = "Photography"
+        elif any(word in filename_lower for word in ['art', 'drawing', 'sketch', 'artwork']):
+            category = "Hobbies"
+        elif any(word in filename_lower for word in ['medical', 'prescription', 'lab', 'clinic', 'health', 'imaging']):
+            category = "Medical"
+        elif any(word in filename_lower for word in ['passport', 'license', 'id', 'birth', 'social', 'certificate', 'diploma']):
+            category = "Identification"
+        elif any(word in filename_lower for word in ['home', 'mortgage', 'utilities', 'tax', 'property', 'electricity', 'cable']):
+            category = "Home"
+        elif any(word in filename_lower for word in ['car', 'auto', 'vehicle', 'registration', 'repair', 'title']):
+            category = "Auto"
+        elif any(word in filename_lower for word in ['bank', 'statement', 'invoice', 'tax', 'paystub', 'w2', 'payment']):
+            category = "Financial"
+        elif any(word in filename_lower for word in ['recipe', 'cookbook', 'meal', 'diet']):
+            category = "Cooking"
         else:
             category = "Other"
         
@@ -284,20 +469,27 @@ class LLMAnalyzer:
             2. Suggest the BEST category name for this document using one of the defined categories below:
             
             Categories available:
-+- "Medical": health and wellness records (prescriptions, lab results, imaging reports)
-+- "Identification": passports, driver's licenses, birth certificates
-+- "Home": mortgage papers, utilities, property tax documents
-+- "Auto": car titles, maintenance records, registrations
-+- "SysAdmin": software licenses, technical manuals, network configs
-+- "School": transcripts, degree certificates
-+- "Cooking": recipes, meal plans
-+- "Financial": bank statements, tax documents, invoices
-+- "Travel": itineraries, tickets, reservations
-+- "Employment": contracts, pay stubs, benefits forms
-+- "Photography": photo albums, media releases
-+- "Hobbies": DIY guides, craft patterns
-+- "Memories": letters, ticket stubs, personal notes
-+- "Other": documents that don't fit above categories
+            - "Medical": health and wellness records (prescriptions, lab results, imaging reports)
+            - "Identification": passports, driver's licenses, birth certificates
+            - "Home": mortgage papers, utilities, property tax documents
+            - "Auto": car titles, maintenance records, registrations
+            - "SysAdmin": software licenses, technical manuals, network configs
+            - "School": transcripts, degree certificates
+            - "Cooking": recipes, meal plans
+            - "Financial": bank statements, tax documents, invoices
+            - "Travel": itineraries, tickets, reservations
+            - "Employment": contracts, pay stubs, benefits forms
+            - "Photography": photo albums, media releases
+            - "Hobbies": DIY guides, craft patterns
+            - "Memories": greeting cards, handwritten notes, personal letters, memorabilia, ticket stubs
+            - "Other": documents that don't fit above categories
+
+            SPECIAL ATTENTION: If the document appears to be a greeting card, birthday card, handwritten note, 
+            personal letter, or memorabilia, categorize it as "Memories". Look for phrases like:
+            - Birthday wishes, congratulations, holiday greetings
+            - Personal handwritten messages or signatures
+            - Sentimental content, memories, or personal notes
+            - Anniversary, wedding, or special occasion content
             
             Document filename: {filename}
             Document text (partial):

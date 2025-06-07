@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
                            QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit)
-from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage
 
 class FileFinderThread(QThread):
@@ -209,9 +209,13 @@ class FileOrganizerGUI(QMainWindow):
         if header is not None:
             header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # Make the new filename column stretch
-            
-        # Connect selection change to preview update
-        self.file_view.selectionModel().selectionChanged.connect(self.update_preview)
+
+        # Connect selection change to preview update (only if selectionModel exists)
+        if self.file_view.selectionModel() is not None:
+            self.file_view.selectionModel().selectionChanged.connect(self.update_preview)
+        else:
+            # Defer connection until the event loop starts, to ensure selectionModel is available
+            QTimer.singleShot(0, lambda: self.file_view.selectionModel().selectionChanged.connect(self.update_preview))
     
     def browse_source_folder(self):
         """Browse for source folder and populate file tree"""
@@ -386,7 +390,13 @@ class FileOrganizerGUI(QMainWindow):
             self.preview_image_label.setVisible(False)
             return
             
-        indexes = self.file_view.selectionModel().selectedRows()
+        selection_model = self.file_view.selectionModel()
+        if selection_model is None:
+            self.preview_text.setText("Select a file to see preview.")
+            self.preview_image_label.setVisible(False)
+            return
+
+        indexes = selection_model.selectedRows()
         if not indexes:
             self.preview_text.setText("Select a file to see preview.")
             self.preview_image_label.setVisible(False)

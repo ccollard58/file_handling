@@ -249,7 +249,7 @@ class FileOrganizerGUI(QMainWindow):
         if selection_model is None:
             return selected_files
         selection = selection_model.selectedIndexes()
-        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif']
+        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx']
         for index in selection:
             if index.column() == 0:  # Avoid duplicates
                 file_path = self.file_system_model.filePath(index)
@@ -270,7 +270,7 @@ class FileOrganizerGUI(QMainWindow):
         if not self.current_folder:        return []
         
         all_files = []
-        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif']
+        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx']
         
         for root, _, files in os.walk(self.current_folder):
             for file in files:
@@ -461,6 +461,23 @@ class FileOrganizerGUI(QMainWindow):
                 f"{extracted_text[:1000]}{'...' if len(extracted_text) > 1000 else ''}"
             )
             self.preview_text.setText(preview_text)
+        
+        # Handle Word documents (.doc and .docx)
+        elif file_ext in ['.doc', '.docx']:
+            self.preview_image_label.setVisible(False)
+            try:
+                # Extract text from document
+                extracted_text = self.document_processor.extract_text(file_path)
+                file_size = os.path.getsize(file_path) / 1024  # KB
+                preview_text = (
+                    f"DOC Preview: {os.path.basename(file_path)}\n"
+                    f"Size: {file_size:.1f} KB\n\n"
+                    f"Extracted Text (first 1000 chars):\n"
+                    f"{extracted_text[:1000]}{'...' if len(extracted_text) > 1000 else ''}"
+                )
+                self.preview_text.setText(preview_text)
+            except Exception as e:
+                self.preview_text.setText(f"Error previewing document: {str(e)}")
         
         # Handle other file types
         else:

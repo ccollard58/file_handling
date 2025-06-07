@@ -3,6 +3,8 @@ import pytesseract
 from PIL import Image
 from pypdf import PdfReader
 import logging
+from docx import Document
+import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -20,6 +22,12 @@ class DocumentProcessor:
                 return self._extract_text_from_pdf(file_path)
             elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.tiff', '.tif']:
                 return self._extract_text_from_image(file_path)
+            elif file_ext == '.docx':
+                return self._extract_text_from_docx(file_path)
+            elif file_ext == '.doc':
+                return self._extract_text_from_doc(file_path)
+            elif file_ext == '.xlsx':
+                return self._extract_text_from_xlsx(file_path)
             else:
                 logging.warning(f"Unsupported file format: {file_ext}")
                 return ""
@@ -79,10 +87,10 @@ class DocumentProcessor:
             # For image files, add logging to help diagnose OCR issues
             if text.strip():
                 text_preview = text.strip()[:50] + ('...' if len(text.strip()) > 50 else '')
-                logging.info(f"OCR extracted {len(text.strip())} chars from {file_path}: {text_preview}")
+                logging.info(f"OCR extracted {len(text.strip())} chars from '{file_path}': {text_preview}")
             else:
-                logging.info(f"OCR extracted no text from {file_path}")
-                
+                logging.info(f"OCR extracted no text from '{file_path}'")
+
             return text
         except Exception as e:
             logging.error(f"Error processing image {file_path}: {str(e)}")
@@ -98,4 +106,50 @@ class DocumentProcessor:
             return "OCR text from PDF would go here"
         except Exception as e:
             logging.error(f"Error performing OCR on PDF {file_path}: {str(e)}")
+            return ""
+    
+    def _extract_text_from_docx(self, file_path):
+        """Extract text from DOCX file."""
+        text = ""
+        try:
+            doc = Document(file_path)
+            # Extract paragraphs
+            for para in doc.paragraphs:
+                text += para.text + "\n"
+            # Extract tables
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        text += cell.text + "\t"
+                text += "\n"
+            return text
+        except Exception as e:
+            logging.error(f"Error processing DOCX {file_path}: {str(e)}")
+            return ""
+    def _extract_text_from_doc(self, file_path):
+        """Extract text from DOC file using Windows COM interface."""
+        try:
+            import win32com.client
+            word = win32com.client.Dispatch('Word.Application')
+            word.Visible = False
+            doc = word.Documents.Open(file_path)
+            text = doc.Content.Text
+            doc.Close(False)
+            word.Quit()
+            return text
+        except Exception as e:
+            logging.error(f"Error processing DOC {file_path}: {str(e)}")
+            return ""
+    
+    def _extract_text_from_xlsx(self, file_path):
+        """Extract text from XLSX file."""
+        try:
+            df = pd.read_excel(file_path, header=None, dtype=str)
+            df = df.fillna('')
+            text = ''
+            for row in df.itertuples(index=False):
+                text += ' '.join(str(cell) for cell in row) + "\n"
+            return text
+        except Exception as e:
+            logging.error(f"Error processing XLSX {file_path}: {str(e)}")
             return ""

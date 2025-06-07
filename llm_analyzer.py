@@ -12,7 +12,10 @@ class LLMAnalyzer:
     def __init__(self):
         try:
             # Use the same model from the notebook that works with images
-            self.llm = OllamaLLM(model="gemma3:27b-it-fp16")
+            # self.llm = OllamaLLM(model="gemma3:27b-it-fp16")
+            # self.llm = OllamaLLM(model="deepseek-r1:8b-0528-qwen3-fp16", temperature=0.6)
+            self.llm = OllamaLLM(model="qwq:32b-q8_0", temperature=0.6)
+            # self.llm = OllamaLLM(model="phi4:14b-q8_0", temperature=0.2)
             logging.info("LLM initialized successfully")
         except Exception as e:
             logging.error(f"Error initializing LLM: {str(e)}")
@@ -65,7 +68,6 @@ class LLMAnalyzer:
             
             # Analyze document for category and description
             doc_info = self._analyze_document_content(text, filename)
-            
             return {
                 "identity": identity,
                 "date": date,
@@ -75,23 +77,36 @@ class LLMAnalyzer:
         except Exception as e:
             logging.error(f"Error analyzing document {filename}: {str(e)}")
             return self._create_default_result(filename, creation_date)
+    
     def _analyze_image_visually(self, file_path, filename, creation_date):
         """Analyze an image file visually using LLM."""
         try:
             # Create prompt for visual analysis
             prompt = """Analyze this image to extract document information. Look for:
 1. Any visible text or names (especially "Chuck Collard", "Charles Collard", "Charles W Collard", "Colleen McGinnis", or "Colleen Collard")
-2. What type of document this appears to be (medical document, receipt, contract, photograph, or other)
+2. What type of document this appears to be
 3. Any visible dates
 4. A brief descriptive title for the document (5 words or less)
 
-Important: If this appears to be a personal photograph (family photos, vacation pictures, portraits, etc.) rather than a document with text, categorize it as "Photographs".
+For the category, suggest the BEST category name that describes what type of document this is.
+Don't limit yourself to predefined categories - use your judgment to suggest the most appropriate category name.
+
+Examples of good category names:
+- "Personal Photos" for family pictures, vacation photos, portraits
+- "Medical Records" for health-related documents, prescriptions, lab results
+- "Financial Documents" for bank statements, tax forms, financial records
+- "Insurance" for insurance policies and claims
+- "Legal Documents" for contracts, wills, agreements  
+- "Receipts" for purchase receipts and invoices
+- "Travel Documents" for tickets, itineraries, travel info
+- "Home & Property" for house-related documents
+- "Employment" for work-related papers
 
 Based on what you can see in this image, respond in JSON format:
 {
-    "identity": "Chuck or Colleen or Unknown",
+    "identity": "your guess here (Chuck or Colleen or Unknown)",
     "description": "Brief descriptive title",
-    "category": "Medical Documents or Receipts or Contracts or Photographs or Other",
+    "category": "Your best category suggestion here",
     "visible_text": "Any text you can clearly read",
     "document_type": "What type of document this appears to be"
 }"""
@@ -112,7 +127,7 @@ Based on what you can see in this image, respond in JSON format:
                     "identity": result.get("identity", "Unknown"),
                     "date": date,
                     "description": result.get("description", "Image Document"),
-                    "category": result.get("category", "Other")
+                    "category": result.get("category", "Uncategorized")
                 }
             else:
                 # Fallback if JSON parsing fails
@@ -122,26 +137,31 @@ Based on what you can see in this image, respond in JSON format:
         except Exception as e:
             logging.error(f"Error in visual image analysis: {str(e)}")
             return self._create_image_fallback_result(filename, creation_date)
+    
     def _create_image_fallback_result(self, filename, creation_date):
         """Create a fallback result for images when visual analysis fails."""
         # Try to infer category from filename
         filename_lower = filename.lower()
         
-        if any(word in filename_lower for word in ['medical', 'doctor', 'prescription', 'hospital', 'clinic']):
-            category = "Medical Documents"
-        elif any(word in filename_lower for word in ['receipt', 'invoice', 'bill', 'purchase']):
+        if any(word in filename_lower for word in ['medical', 'doctor', 'prescription', 'hospital', 'clinic', 'health']):
+            category = "Medical Records"
+        elif any(word in filename_lower for word in ['receipt', 'invoice', 'bill', 'purchase', 'store', 'shop']):
             category = "Receipts"
-        elif any(word in filename_lower for word in ['contract', 'agreement', 'legal']):
-            category = "Contracts"
+        elif any(word in filename_lower for word in ['contract', 'agreement', 'legal', 'policy', 'terms']):
+            category = "Legal Documents"
+        elif any(word in filename_lower for word in ['insurance', 'claim', 'policy', 'coverage']):
+            category = "Insurance"
+        elif any(word in filename_lower for word in ['bank', 'statement', 'financial', 'tax', 'irs']):
+            category = "Financial Documents"
         elif any(word in filename_lower for word in ['photo', 'pic', 'img', 'image', 'portrait', 'family', 'vacation', 'selfie', 'snapshot']):
-            category = "Photographs"
+            category = "Personal Photos"
         else:
-            # For image files, default to Photographs unless there are clear document indicators
+            # For image files, default to Personal Photos unless there are clear document indicators
             file_ext = os.path.splitext(filename)[1].lower()
             if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif']:
-                category = "Photographs"
+                category = "Personal Photos"
             else:
-                category = "Other"
+                category = "Documents"
         
         # Extract base filename without extension for description
         base_name = os.path.splitext(filename)[0]
@@ -249,14 +269,28 @@ Based on what you can see in this image, respond in JSON format:
             template="""
             Analyze the following document text and filename to:
             1. Create a brief descriptive title (5 words or less)
-            2. Determine the category from these options: "Medical Documents", "Receipts", "Contracts", "Other"
+            2. Suggest the BEST category name that describes what type of document this is
+            
+            For the category, think about what would be the most intuitive and useful category name for organizing this document. 
+            Don't limit yourself to predefined categories - use your judgment to suggest the most appropriate category name.
+            
+            Examples of good category names:
+            - "Medical Records" for health-related documents
+            - "Financial Documents" for bank statements, tax forms
+            - "Insurance" for insurance policies and claims
+            - "Legal Documents" for contracts, wills, agreements
+            - "Receipts" for purchase receipts and invoices
+            - "Personal Photos" for family pictures
+            - "Travel Documents" for tickets, itineraries
+            - "Home & Property" for house-related documents
+            - "Employment" for work-related papers
             
             Document filename: {filename}
             Document text (partial):
             {text}
             
             Respond in JSON format:
-            {{"description": "Brief title here", "category": "Category here"}}
+            {{"description": "Brief title here", "category": "Your best category suggestion here"}}
             """
         )
         
@@ -269,7 +303,7 @@ Based on what you can see in this image, respond in JSON format:
                 result = json.loads(json_match.group(0))
                 return {
                     "description": result.get("description", "Unknown Document"),
-                    "category": result.get("category", "Other")
+                    "category": result.get("category", "Uncategorized")
                 }
             else:
                 # Fallback parsing if JSON extraction fails
@@ -278,11 +312,11 @@ Based on what you can see in this image, respond in JSON format:
                 
                 return {
                     "description": description_match.group(1) if description_match else "Unknown Document",
-                    "category": category_match.group(1) if category_match else "Other"
+                    "category": category_match.group(1) if category_match else "Uncategorized"
                 }
         except Exception as e:
             logging.error(f"Error in LLM analysis: {str(e)}")
-            return {"description": "Unknown Document", "category": "Other"}
+            return {"description": "Unknown Document", "category": "Uncategorized"}
     
     def _create_default_result(self, filename, creation_date):
         """Create a default result when analysis fails."""
@@ -290,5 +324,5 @@ Based on what you can see in this image, respond in JSON format:
             "identity": "Unknown",
             "date": creation_date.strftime('%Y-%m-%d'),
             "description": os.path.splitext(os.path.basename(filename))[0],
-            "category": "Other"
+            "category": "Uncategorized"
         }

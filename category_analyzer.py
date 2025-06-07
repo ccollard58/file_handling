@@ -33,7 +33,7 @@ class CategoryAnalyzer:
         self.sample_size = sample_size
         self.llm_analyzer = LLMAnalyzer()
         self.document_processor = DocumentProcessor()
-        self.supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.docx', '.doc', '.txt']
+        self.supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.docx', '.doc', '.txt', '.xlsx']
         self.existing_categories = ["Medical Documents", "Receipts", "Contracts", "Photographs", "Other"]
         
         # Use the same LLM instance from the analyzer for category suggestions
@@ -170,6 +170,10 @@ class CategoryAnalyzer:
         
         try:
             logging.info("Sending category suggestion prompt to LLM")
+            logging.info(f"Prompt: {prompt}")
+            # save prompt to a file for debugging
+            with open("category_suggestion_prompt.txt", "w") as f:
+                f.write(prompt)
             response = self.llm.invoke(prompt)
             logging.info("LLM category suggestion response received")
             
@@ -196,7 +200,11 @@ class CategoryAnalyzer:
         
         # Analyze the sample
         analysis_results = self.analyze_sample(sample_files)
-        
+
+        # save the analysis_results to a file
+        with open("per_file_analysis_results.json", "w") as f:
+            json.dump(analysis_results, f, indent=2)
+
         # Get category suggestions
         suggested_categories = self.suggest_categories(analysis_results)
         
@@ -237,7 +245,13 @@ if __name__ == "__main__":
         source_dir = sys.argv[1]
     
     # Create and run the analyzer
-    sample_size = 1000
+    sample_size = 10
+    sample_size = sys.argv[2]   if len(sys.argv) > 2 else sample_size
+    try:
+        sample_size = int(sample_size)
+    except ValueError:
+        logging.error(f"Invalid sample size '{sample_size}', using default {10}")
+        sample_size = 10
     analyzer = CategoryAnalyzer(source_dir, sample_size)
     suggested_categories = analyzer.run_analysis()
     

@@ -4,9 +4,10 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
-                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit)
+                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle)
 from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon
+from PyQt6.QtPdf import QPdfDocument
 
 class FileFinderThread(QThread):
     """Thread to find files in background without freezing the UI"""
@@ -184,8 +185,8 @@ class FileOrganizerGUI(QMainWindow):
         # Image preview label
         self.preview_image_label = QLabel()
         self.preview_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_image_label.setMinimumHeight(200)
-        self.preview_image_label.setMaximumHeight(200)
+        # Reserve only thumbnail dimensions to minimize empty space
+        self.preview_image_label.setFixedSize(100, 100)
         self.preview_image_label.setVisible(False)
         preview_layout.addWidget(self.preview_image_label)
         
@@ -446,7 +447,7 @@ class FileOrganizerGUI(QMainWindow):
                         f"Size: {file_size:.1f} KB\n"
                         f"Format: {file_ext[1:].upper()}\n\n"
                         f"Extracted Text (OCR):\n"
-                        f"{extracted_text[:500]}{'...' if len(extracted_text) > 500 else ''}"
+                        f"{extracted_text[:5000]}{'...' if len(extracted_text) > 5000 else ''}"
                     )
                     self.preview_text.setText(preview_text)
                 else:
@@ -458,8 +459,23 @@ class FileOrganizerGUI(QMainWindow):
         
         # Handle PDF files
         elif file_ext == '.pdf':
-            self.preview_image_label.setVisible(False)
-            
+            # Generate thumbnail for PDF first page
+            try:
+                pdf_doc = QPdfDocument(self)
+                pdf_doc.load(file_path)
+                # Render first page as thumbnail if available
+                if pdf_doc.pageCount() > 0:
+                    img = pdf_doc.render(0, QSize(100, 100))
+                    pix = QPixmap.fromImage(img)
+                    thumb = pix.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    self.preview_image_label.setPixmap(thumb)
+                    self.preview_image_label.setVisible(True)
+                else:
+                    self.preview_image_label.setVisible(False)
+                pdf_doc.close()
+            except Exception:
+                self.preview_image_label.setVisible(False)
+             
             # Extract text from PDF
             extracted_text = self.document_processor.extract_text(file_path)
             
@@ -467,14 +483,21 @@ class FileOrganizerGUI(QMainWindow):
             preview_text = (
                 f"PDF Preview: {os.path.basename(file_path)}\n"
                 f"Size: {file_size:.1f} KB\n\n"
-                f"Extracted Text (first 1000 characters):\n"
-                f"{extracted_text[:1000]}{'...' if len(extracted_text) > 1000 else ''}"
+                f"Extracted Text (first 5000 characters):\n"
+                f"{extracted_text[:5000]}{'...' if len(extracted_text) > 5000 else ''}"
             )
             self.preview_text.setText(preview_text)
         
         # Handle Word documents (.doc and .docx)
         elif file_ext in ['.doc', '.docx']:
-            self.preview_image_label.setVisible(False)
+            # Show generic file icon as thumbnail for Word docs
+            try:
+                icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+                pixmap = icon.pixmap(100, 100)
+                self.preview_image_label.setPixmap(pixmap)
+                self.preview_image_label.setVisible(True)
+            except Exception:
+                self.preview_image_label.setVisible(False)
             try:
                 # Extract text from document
                 extracted_text = self.document_processor.extract_text(file_path)
@@ -482,8 +505,8 @@ class FileOrganizerGUI(QMainWindow):
                 preview_text = (
                     f"DOC Preview: {os.path.basename(file_path)}\n"
                     f"Size: {file_size:.1f} KB\n\n"
-                    f"Extracted Text (first 1000 chars):\n"
-                    f"{extracted_text[:1000]}{'...' if len(extracted_text) > 1000 else ''}"
+                    f"Extracted Text (first 5000 chars):\n"
+                    f"{extracted_text[:5000]}{'...' if len(extracted_text) > 5000 else ''}"
                 )
                 self.preview_text.setText(preview_text)
             except Exception as e:

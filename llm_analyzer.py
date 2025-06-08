@@ -6,7 +6,7 @@ from datetime import datetime
 from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class LLMAnalyzer:
     def __init__(self):
@@ -83,29 +83,29 @@ class LLMAnalyzer:
         try:
             # Create prompt for visual analysis
             prompt = """Analyze this image to extract document information. Look for:
-             1. Any visible text or names (especially "Chuck Collard", "Charles Collard", "Charles W Collard", "Colleen McGinnis", or "Colleen Collard")
-             2. What type of document this appears to be
-             3. Any visible dates
-             4. A brief descriptive title for the document (5 words or less)
+            1. Any visible text or names (especially "Chuck Collard", "Charles Collard", "Charles W Collard", "Colleen McGinnis", or "Colleen Collard")
+            2. What type of document this appears to be
+            3. Any visible dates
+            4. A brief descriptive title for the document (5 words or less)
 
-             For the category, suggest the BEST category name that describes what type of document this is. Use one of the following categories:
-+            Examples of categories:
-+- "Medical" for health and wellness records (prescriptions, lab results, imaging reports)
-+- "Identification" for IDs and vital records (passports, driver's licenses, birth certificates)
-+- "Home" for residence documents (mortgage papers, utilities, property tax)
-+- "Auto" for vehicle documents (car titles, maintenance records, registrations)
-+- "SysAdmin" for technical and software docs (licenses, manuals, network configs)
-+- "School" for academic records (transcripts, degree certificates)
-+- "Cooking" for recipes and meal plans
-+- "Financial" for income and expense records (bank statements, tax documents, invoices)
-+- "Travel" for trip-related docs (itineraries, tickets, reservations)
-+- "Employment" for work-related documents (contracts, pay stubs, benefits forms)
-+- "Photography" for photo albums and media releases
-+- "Hobbies" for personal hobby guides and patterns
-+- "Memories" for memorabilia documents (letters, ticket stubs, notes)
-+- "Other" for any documents that don't fit above categories
+            For the category, suggest the BEST category name that describes what type of document this is. Use one of the following categories:
+            Examples of categories:
+            - "Medical" for health and wellness records (prescriptions, lab results, imaging reports)
+            - "Identification" for IDs and vital records (passports, driver's licenses, birth certificates)
+            - "Home" for residence documents (mortgage papers, utilities, property tax)
+            - "Auto" for vehicle documents (car titles, maintenance records, registrations)
+            - "SysAdmin" for technical and software docs (licenses, manuals, network configs)
+            - "School" for academic records (transcripts, degree certificates)
+            - "Cooking" for recipes and meal plans
+            - "Financial" for income and expense records (bank statements, tax documents, invoices)
+            - "Travel" for trip-related docs (itineraries, tickets, reservations)
+            - "Employment" for work-related documents (contracts, pay stubs, benefits forms)
+            - "Photography" for photo albums and media releases
+            - "Hobbies" for personal hobby guides and patterns
+            - "Memories" for memorabilia documents (letters, ticket stubs, notes)
+            - "Other" for any documents that don't fit above categories
 
- Based on what you can see in this image, respond in JSON format:
+            Based on what you can see in this image, respond in JSON format:
              {
                  "identity": "your guess here (Chuck or Colleen or Unknown)",
                  "description": "Brief descriptive title",
@@ -116,8 +116,8 @@ class LLMAnalyzer:
             
             # Use the file path directly with the images parameter (like in the notebook)
             response = self.llm.invoke(prompt, images=[str(file_path)])
-            logging.info(f"LLM response for image {filename}: {response}")
-            
+            logging.debug(f"LLM response for image {filename}: {response}")
+        
             # Try to extract JSON from response
             json_match = re.search(r'{.*}', response, re.DOTALL)
             if json_match:
@@ -284,20 +284,20 @@ class LLMAnalyzer:
             2. Suggest the BEST category name for this document using one of the defined categories below:
             
             Categories available:
-+- "Medical": health and wellness records (prescriptions, lab results, imaging reports)
-+- "Identification": passports, driver's licenses, birth certificates
-+- "Home": mortgage papers, utilities, property tax documents
-+- "Auto": car titles, maintenance records, registrations
-+- "SysAdmin": software licenses, technical manuals, network configs
-+- "School": transcripts, degree certificates
-+- "Cooking": recipes, meal plans
-+- "Financial": bank statements, tax documents, invoices
-+- "Travel": itineraries, tickets, reservations
-+- "Employment": contracts, pay stubs, benefits forms
-+- "Photography": photo albums, media releases
-+- "Hobbies": DIY guides, craft patterns
-+- "Memories": letters, ticket stubs, personal notes
-+- "Other": documents that don't fit above categories
+            - "Medical": health and wellness records (prescriptions, lab results, imaging reports)
+            - "Identification": passports, driver's licenses, birth certificates
+            - "Home": mortgage papers, utilities, property tax documents
+            - "Auto": car titles, maintenance records, registrations
+            - "SysAdmin": software licenses, technical manuals, network configs
+            - "School": transcripts, degree certificates
+            - "Cooking": recipes, meal plans
+            - "Financial": bank statements, tax documents, invoices
+            - "Travel": itineraries, tickets, reservations
+            - "Employment": contracts, pay stubs, benefits forms
+            - "Photography": photo albums, media releases
+            - "Hobbies": DIY guides, craft patterns
+            - "Memories": letters, ticket stubs, personal notes
+            - "Other": documents that don't fit above categories
             
             Document filename: {filename}
             Document text (partial):
@@ -312,6 +312,7 @@ class LLMAnalyzer:
             response = self.llm.invoke(prompt.format(text=text[:2000], filename=filename))
             
             # Try to extract JSON from response
+            logging.debug(f"LLM response for document {filename}: {response}")
             json_match = re.search(r'{.*}', response, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group(0))

@@ -176,6 +176,15 @@ class FileOrganizerGUI(QMainWindow):
         self.process_btn.clicked.connect(self.process_files)
         process_layout.addWidget(self.process_btn)
         
+        # Add undo controls
+        self.undo_last_btn = QPushButton("Undo Last Action")
+        self.undo_last_btn.clicked.connect(self.undo_last_action_gui)
+        process_layout.addWidget(self.undo_last_btn)
+        
+        self.undo_all_btn = QPushButton("Undo All Actions")
+        self.undo_all_btn.clicked.connect(self.undo_all_actions_gui)
+        process_layout.addWidget(self.undo_all_btn)
+        
         results_layout.addLayout(process_layout)
         
         # Add preview panel
@@ -551,15 +560,20 @@ class FileOrganizerGUI(QMainWindow):
     def show_context_menu(self, position):
         """Show context menu for file list"""
         index = self.file_view.indexAt(position)
-        if not index.isValid():
-            return
-        
         menu = QMenu(self)
-        
-        edit_action = QAction("Edit", self)
-        edit_action.triggered.connect(lambda: self.edit_cell(index))
-        menu.addAction(edit_action)
-        
+        # Undo actions available globally
+        undo_last = QAction("Undo Last Action", self)
+        undo_last.triggered.connect(self.undo_last_action_gui)
+        menu.addAction(undo_last)
+        undo_all = QAction("Undo All Actions", self)
+        undo_all.triggered.connect(self.undo_all_actions_gui)
+        menu.addAction(undo_all)
+        # Row-specific edit
+        if index.isValid():
+            edit_action = QAction("Edit", self)
+            edit_action.triggered.connect(lambda: self.edit_cell(index))
+            menu.addAction(edit_action)
+        # Show context menu
         viewport = self.file_view.viewport()
         if viewport is not None:
             menu.exec(viewport.mapToGlobal(position))
@@ -730,6 +744,22 @@ class FileOrganizerGUI(QMainWindow):
             self.file_tree.hideColumn(1)  # Size
             self.file_tree.hideColumn(2)  # Type
             self.file_tree.hideColumn(3)  # Date Modified
+
+    def undo_last_action_gui(self):
+        """Handle undo of the last file action via GUI"""
+        result = self.file_handler.undo_last_action()
+        if result:
+            QMessageBox.information(self, "Undo Last", "Last action undone successfully.")
+        else:
+            QMessageBox.information(self, "Undo Last", "No actions to undo.")
+    
+    def undo_all_actions_gui(self):
+        """Handle undo of all file actions via GUI"""
+        result = self.file_handler.undo_all_actions()
+        if result:
+            QMessageBox.information(self, "Undo All", "All actions undone successfully.")
+        else:
+            QMessageBox.information(self, "Undo All", "No actions to undo.")
 
 def main():
     """Main function to run the GUI application"""

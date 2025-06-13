@@ -4,10 +4,55 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
-                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle)
-from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon
+                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton)
+from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter
 from PyQt6.QtPdf import QPdfDocument
+
+class CheckBoxDelegate(QStyledItemDelegate):
+    """Custom delegate to center checkboxes in the first column"""
+    
+    def paint(self, painter, option, index):
+        if index.column() == 0:
+            # Get the checkbox state from the model
+            checkState = index.model().data(index, Qt.ItemDataRole.CheckStateRole)
+            
+            # Calculate centered position for a smaller checkbox
+            checkbox_size = 13  # Slightly smaller for better fit
+            x = option.rect.x() + (option.rect.width() - checkbox_size) // 2
+            y = option.rect.y() + (option.rect.height() - checkbox_size) // 2
+            
+            # Create centered checkbox rectangle
+            checkbox_rect = QRect(x, y, checkbox_size, checkbox_size)
+            
+            # Draw background if selected
+            if option.state & QStyle.StateFlag.State_Selected:
+                painter.fillRect(option.rect, option.palette.highlight())
+            
+            # Create style option for checkbox
+            checkbox_style = QStyleOptionButton()
+            checkbox_style.rect = checkbox_rect
+            checkbox_style.state = QStyle.StateFlag.State_Enabled
+            
+            if checkState == Qt.CheckState.Checked:
+                checkbox_style.state |= QStyle.StateFlag.State_On
+            else:
+                checkbox_style.state |= QStyle.StateFlag.State_Off
+            
+            # Draw the checkbox using the application style
+            style = QApplication.style()
+            style.drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorCheckBox, checkbox_style, painter)
+        else:
+            super().paint(painter, option, index)
+    
+    def editorEvent(self, event, model, option, index):
+        """Handle mouse clicks on the checkbox"""
+        if index.column() == 0 and event.type() == QEvent.Type.MouseButtonRelease:
+            # Toggle the checkbox state
+            current_state = model.data(index, Qt.ItemDataRole.CheckStateRole)
+            new_state = Qt.CheckState.Unchecked if current_state == Qt.CheckState.Checked else Qt.CheckState.Checked
+            return model.setData(index, new_state, Qt.ItemDataRole.CheckStateRole)
+        return super().editorEvent(event, model, option, index)
 
 class FileFinderThread(QThread):
     """Thread to find files in background without freezing the UI"""
@@ -112,8 +157,7 @@ class FileOrganizerGUI(QMainWindow):
         self.folder_status_label = QLabel("No folder selected")
         self.folder_status_label.setStyleSheet("QLabel { color: #666; font-style: italic; }")
         folder_layout.addWidget(self.folder_status_label)
-        
-        # File tree view
+          # File tree view
         self.file_tree = QTreeView()
         self.file_system_model = QFileSystemModel()
         self.file_tree.setModel(self.file_system_model)
@@ -141,7 +185,7 @@ class FileOrganizerGUI(QMainWindow):
         results_panel = QWidget()
         results_layout = QVBoxLayout(results_panel)
         
-        results_layout.addWidget(QLabel("Step 3: Review and Process Results"))
+        results_layout.addWidget(QLabel("Review Results"))
         
         # File list view for results
         self.file_view = QTreeView()
@@ -151,6 +195,10 @@ class FileOrganizerGUI(QMainWindow):
             "Identity", "Date", "Description"
         ])
         self.file_view.setModel(self.file_model)
+        
+        # Set custom delegate for centering checkboxes
+        checkbox_delegate = CheckBoxDelegate()
+        self.file_view.setItemDelegateForColumn(0, checkbox_delegate)
         
         # Enable context menu
         self.file_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -213,12 +261,19 @@ class FileOrganizerGUI(QMainWindow):
         # Set splitter proportions
         splitter.setSizes([400, 800])
         main_layout.addWidget(splitter)
-        
-        # Configure file view headers
+          # Configure file view headers
         header = self.file_view.header()
         if header is not None:
-            header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # Make the new filename column stretch
+            # Fix the checkbox column (0) width and prevent resizing
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+            header.resizeSection(0, 40)  # Made wider to accommodate centered checkbox
+            # Configure other columns: interactive resizing
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
 
         # Connect selection change to preview update (only if selectionModel exists)
         if self.file_view.selectionModel() is not None:
@@ -383,13 +438,20 @@ class FileOrganizerGUI(QMainWindow):
         
         progress.setValue(len(file_list))
         progress.close()
-        
-        # Configure view after adding data
+          # Configure view after adding data
         header = self.file_view.header()
         if header is not None:
-            header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-            
+            # Fix the checkbox column (0) width and prevent resizing
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+            header.resizeSection(0, 40)  # Made wider to accommodate centered checkbox
+            # Configure other columns: interactive resizing
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+
         # Update preview if available
         self.update_preview()
     
@@ -577,7 +639,7 @@ class FileOrganizerGUI(QMainWindow):
         viewport = self.file_view.viewport()
         if viewport is not None:
             menu.exec(viewport.mapToGlobal(position))
-    
+
     def edit_cell(self, index):
         """Edit a cell in the file list"""
         if not index.isValid():
@@ -608,28 +670,28 @@ class FileOrganizerGUI(QMainWindow):
                     self.analyzed_files[row]['date'] = new_text
                 elif column == 6:  # Description
                     self.analyzed_files[row]['description'] = new_text
-    
+
     def select_all_files(self):
         """Select all files in the list"""
         for row in range(self.file_model.rowCount()):
-            checkbox_item = self.file_model.item(row, 0)
-            if checkbox_item:
-                checkbox_item.setCheckState(Qt.CheckState.Checked)
-    
+            index = self.file_model.index(row, 0)
+            self.file_model.setData(index, Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
+
     def unselect_all_files(self):
         """Unselect all files in the list"""
         for row in range(self.file_model.rowCount()):
-            checkbox_item = self.file_model.item(row, 0)
-            if checkbox_item:
-                checkbox_item.setCheckState(Qt.CheckState.Unchecked)
-    
-    def process_files(self):
+            index = self.file_model.index(row, 0)
+            self.file_model.setData(index, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+      def process_files(self):
         """Process the selected files (move and rename)"""
         selected_files = []
         
         for row in range(self.file_model.rowCount()):
-            checkbox_item = self.file_model.item(row, 0)
-            if checkbox_item and checkbox_item.checkState() == Qt.CheckState.Checked:
+            # Check checkbox state using the same method as the custom delegate
+            index = self.file_model.index(row, 0)
+            checkbox_state = self.file_model.data(index, Qt.ItemDataRole.CheckStateRole)
+            
+            if checkbox_state == Qt.CheckState.Checked:
                 if row < len(self.analyzed_files):
                     # Get updated values from the model
                     new_filename_item = self.file_model.item(row, 2)

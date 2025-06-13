@@ -12,10 +12,10 @@ class LLMAnalyzer:
     def __init__(self):
         try:
             # Use the same model from the notebook that works with images
-            # self.llm = OllamaLLM(model="gemma3:27b-it-fp16")
+            self.llm = OllamaLLM(model="gemma3:27b-it-fp16")
             # self.llm = OllamaLLM(model="deepseek-r1:8b-0528-qwen3-fp16", temperature=0.6)
             # self.llm = OllamaLLM(model="qwq:32b-q8_0", temperature=0.6)
-            self.llm = OllamaLLM(model="phi4:14b-fp16", temperature=0.2)
+            # self.llm = OllamaLLM(model="phi4:14b-fp16", temperature=0.2)
             logging.info("LLM initialized successfully")
         except Exception as e:
             logging.error(f"Error initializing LLM: {str(e)}")
@@ -88,22 +88,20 @@ class LLMAnalyzer:
             3. Any visible dates
             4. A brief descriptive title for the document (5 words or less)
 
-            For the category, suggest the BEST category name that describes what type of document this is. Use one of the following categories:
-            Examples of categories:
-            - "Medical" for health and wellness records (prescriptions, lab results, imaging reports)
-            - "Identification" for IDs and vital records (passports, driver's licenses, birth certificates)
-            - "Home" for residence documents (mortgage papers, utilities, property tax)
-            - "Auto" for vehicle documents (car titles, maintenance records, registrations)
-            - "SysAdmin" for technical and software docs (licenses, manuals, network configs)
-            - "School" for academic records (transcripts, degree certificates)
-            - "Cooking" for recipes and meal plans
-            - "Financial" for income and expense records (bank statements, tax documents, invoices)
-            - "Travel" for trip-related docs (itineraries, tickets, reservations)
-            - "Employment" for work-related documents (contracts, pay stubs, benefits forms)
-            - "Photography" for photo albums and media releases
-            - "Hobbies" for personal hobby guides and patterns
-            - "Memories" for memorabilia documents (letters, ticket stubs, notes)
-            - "Other" for any documents that don't fit above categories
+            For the category, suggest the BEST category name that describes what type of document this is. Use one of the following categories with their descriptions and examples:
+            - "Medical": Documents related to personal and family health, including prescriptions, exam results, insurance information, and wellness records. Examples: Medical Imaging Reports, Lab Results, Physical Therapy Plans, Dulera Prescription, Eye Exam Prescription, Pupil Distance Waiver Form
+            - "Identification": Passports, driver's licenses, IDs, and vital records. Examples: Passport, Driver's License, Birth Certificate, Social Security Card
+            - "Home": Documents related to your residence, including purchase agreements, maintenance records, utilities and property information. Examples: Home Warranty, Property Tax Documents, Construction Permits, Mortgage Papers, Closing Documents, Homeowner Insurance, Electricity Bills, Cable Bills
+            - "Auto": Car titles, maintenance records, and vehicle-related paperwork. Examples: Car Title, Auto Repair Records, Registration Documents, Insurance Claim Forms, BMW Warranty Extension Details
+            - "SysAdmin": Documents related to software, network configurations, and technical instructions, including Software licenses, user manuals, and tech warranties. Examples: Software Licenses, Hardware Specifications, Appliance Manuals, Product Warranties, Network Configuration Diagram, Technical Error Report
+            - "School": Degrees, transcripts, and academic records. Examples: Degree Certificates, Transcripts, Course Materials, Student Loans Documents, FranklinCovey Training Notes
+            - "Cooking": Collection of recipes, cookbooks, meal plans and related culinary information. Examples: Apple Raisin Crisp Recipe, Cooking Recipes, Meal Plans, Diet Guides
+            - "Financial": Documents related to income, expenses, investments, and taxes. Examples: W-2s, Wills, Tax Documents, Bank Statements, Pay Stubs, Investment Records
+            - "Travel": Documents related to trips, vacations, and recreational activities. Examples: Travel Itineraries, Boarding Passes, Hotel Confirmation, Tourism Information, Trip Insurance
+            - "Employment": Documents related to employment history, benefits, and income. Examples: Pay stubs, Employment Contracts, Benefits Forms, Performance Reviews
+            - "Hobbies": Documents related to personal hobbies and interests. Examples: DIY Guides, Craft Patterns, Art Supply Inventories, Media Releases, Copyright Registrations
+            - "Memories": Documents that capture a fond memory. Examples: Letters, Notes, Theater Ticket Stubs, Photographs
+            - "Other": Documents that don't fit neatly into other categories, or are unclear in purpose. Examples: Chinese Text Document, Abstract colorful image, Franklin Institute Color Codes, Roadside Attraction Sign
 
             Based on what you can see in this image, respond in JSON format:
              {
@@ -125,7 +123,19 @@ class LLMAnalyzer:
                 
                 # Extract date from filename or use creation date
                 date = self._extract_date("", filename, creation_date)
-                
+                # If image has no visible text, treat as photo
+                visible = result.get("visible_text", "").strip()
+                if not visible:
+                    # Clean filename for description
+                    base = os.path.splitext(filename)[0]
+                    desc = base.replace('_', ' ').replace('-', ' ').title()
+                    return {
+                        "identity": "Unknown",
+                        "date": date,
+                        "description": desc,
+                        "category": "Photography"
+                    }
+                # Otherwise use LLM result
                 return {
                     "identity": result.get("identity", "Unknown"),
                     "date": date,
@@ -146,31 +156,30 @@ class LLMAnalyzer:
         # Try to infer category from filename based on user-defined categories
         filename_lower = filename.lower()
         
-        if any(word in filename_lower for word in ['medical', 'prescription', 'lab', 'clinic', 'health', 'imaging']):
+        # Define category keywords with updated definitions
+        if any(word in filename_lower for word in ['medical', 'prescription', 'lab', 'clinic', 'health', 'imaging', 'wellness']):
             category = "Medical"
-        elif any(word in filename_lower for word in ['passport', 'license', 'id', 'birth', 'social']):
+        elif any(word in filename_lower for word in ['passport', 'driver', 'license', 'id', 'birth', 'social', 'vital']):
             category = "Identification"
-        elif any(word in filename_lower for word in ['home', 'mortgage', 'utilities', 'tax', 'property', 'electricity', 'cable']):
+        elif any(word in filename_lower for word in ['home', 'warranty', 'property', 'tax', 'permit', 'mortgage', 'closing', 'insurance', 'electricity', 'cable', 'utilities', 'maintenance']):
             category = "Home"
-        elif any(word in filename_lower for word in ['car', 'auto', 'vehicle', 'registration', 'repair', 'title']):
+        elif any(word in filename_lower for word in ['car', 'auto', 'vehicle', 'registration', 'repair', 'title', 'insurance', 'claim', 'maintenance']):
             category = "Auto"
-        elif any(word in filename_lower for word in ['software', 'license', 'manual', 'warranty', 'network', 'config', 'technical']):
+        elif any(word in filename_lower for word in ['software', 'license', 'manual', 'warranty', 'network', 'config', 'technical', 'appliance', 'hardware', 'diagram', 'error']):
             category = "SysAdmin"
-        elif any(word in filename_lower for word in ['degree', 'transcript', 'course', 'student', 'training']):
+        elif any(word in filename_lower for word in ['degree', 'transcript', 'course', 'student', 'training', 'academic']):
             category = "School"
-        elif any(word in filename_lower for word in ['recipe', 'cookbook', 'meal', 'diet']):
+        elif any(word in filename_lower for word in ['recipe', 'cookbook', 'meal', 'plan', 'diet', 'culinary']):
             category = "Cooking"
-        elif any(word in filename_lower for word in ['bank', 'statement', 'invoice', 'tax', 'paystub', 'w2', 'payment']):
+        elif any(word in filename_lower for word in ['bank', 'statement', 'invoice', 'tax', 'will', 'paystub', 'payment', 'investment']):
             category = "Financial"
-        elif any(word in filename_lower for word in ['itinerary', 'ticket', 'boarding', 'hotel', 'trip', 'tourism', 'reservation']):
+        elif any(word in filename_lower for word in ['itinerary', 'ticket', 'boarding', 'hotel', 'trip', 'tourism', 'reservation', 'vacation']):
             category = "Travel"
-        elif any(word in filename_lower for word in ['employment', 'contract', 'pay', 'benefit', 'review']):
+        elif any(word in filename_lower for word in ['employment', 'contract', 'pay', 'benefit', 'review', 'history', 'performance']):
             category = "Employment"
-        elif any(word in filename_lower for word in ['photo', 'album', 'media', 'image', 'portrait']):
-            category = "Photography"
-        elif any(word in filename_lower for word in ['diy', 'guide', 'craft', 'hobby', 'pattern']):
+        elif any(word in filename_lower for word in ['diy', 'guide', 'craft', 'pattern', 'art', 'hobby', 'media', 'copyright']):
             category = "Hobbies"
-        elif any(word in filename_lower for word in ['letter', 'note', 'ticket', 'stub', 'memory', 'memories']):
+        elif any(word in filename_lower for word in ['letter', 'note', 'ticket', 'stub', 'memory', 'photograph', 'photographs', 'photo']):
             category = "Memories"
         else:
             category = "Other"
@@ -283,21 +292,19 @@ class LLMAnalyzer:
             1. Create a brief descriptive title (5 words or less)
             2. Suggest the BEST category name for this document using one of the defined categories below:
             
-            Categories available:
-            - "Medical": health and wellness records (prescriptions, lab results, imaging reports)
-            - "Identification": passports, driver's licenses, birth certificates
-            - "Home": mortgage papers, utilities, property tax documents
-            - "Auto": car titles, maintenance records, registrations
-            - "SysAdmin": software licenses, technical manuals, network configs
-            - "School": transcripts, degree certificates
-            - "Cooking": recipes, meal plans
-            - "Financial": bank statements, tax documents, invoices
-            - "Travel": itineraries, tickets, reservations
-            - "Employment": contracts, pay stubs, benefits forms
-            - "Photography": photo albums, media releases
-            - "Hobbies": DIY guides, craft patterns
-            - "Memories": letters, ticket stubs, personal notes
-            - "Other": documents that don't fit above categories
+            - "Medical": Documents related to personal and family health, including prescriptions, exam results, insurance information, and wellness records. Examples: Medical Imaging Reports, Lab Results, Physical Therapy Plans, Dulera Prescription, Eye Exam Prescription, Pupil Distance Waiver Form
+            - "Identification": Passports, driver's licenses, IDs, and vital records. Examples: Passport, Driver's License, Birth Certificate, Social Security Card
+            - "Home": Documents related to your residence, including purchase agreements, maintenance records, utilities and property information. Examples: Home Warranty, Property Tax Documents, Construction Permits, Mortgage Papers, Closing Documents, Homeowner Insurance, Electricity Bills, Cable Bills
+            - "Auto": Car titles, maintenance records, and vehicle-related paperwork. Examples: Car Title, Auto Repair Records, Registration Documents, Insurance Claim Forms, BMW Warranty Extension Details
+            - "SysAdmin": Documents related to software, network configurations, and technical instructions, including Software licenses, user manuals, and tech warranties. Examples: Software Licenses, Hardware Specifications, Appliance Manuals, Product Warranties, Network Configuration Diagram, Technical Error Report
+            - "School": Degrees, transcripts, and academic records. Examples: Degree Certificates, Transcripts, Course Materials, Student Loans Documents, FranklinCovey Training Notes
+            - "Cooking": Collection of recipes, cookbooks, meal plans and related culinary information. Examples: Apple Raisin Crisp Recipe, Cooking Recipes, Meal Plans, Diet Guides
+            - "Financial": Documents related to income, expenses, investments, and taxes. Examples: W-2s, Wills, Tax Documents, Bank Statements, Pay Stubs, Investment Records
+            - "Travel": Documents related to trips, vacations, and recreational activities. Examples: Travel Itineraries, Boarding Passes, Hotel Confirmation, Tourism Information, Trip Insurance
+            - "Employment": Documents related to employment history, benefits, and income. Examples: Pay Stubs, Employment Contracts, Benefits Forms, Performance Reviews
+            - "Hobbies": Documents related to personal hobbies and interests. Examples: DIY Guides, Craft Patterns, Art Supply Inventories, Media Releases, Copyright Registrations
+            - "Memories": Documents that capture a fond memory. Examples: Letters, Notes, Theater Ticket Stubs, Photographs
+            - "Other": Documents that don't fit neatly into other categories, or are unclear in purpose. Examples: Chinese Text Document, Abstract colorful image, Franklin Institute Color Codes, Roadside Attraction Sign
             
             Document filename: {filename}
             Document text (partial):

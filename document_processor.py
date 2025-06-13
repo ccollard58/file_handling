@@ -6,7 +6,7 @@ import logging
 from docx import Document
 import pandas as pd
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DocumentProcessor:
     def __init__(self):

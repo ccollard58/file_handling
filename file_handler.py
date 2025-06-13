@@ -6,7 +6,7 @@ from PIL import Image, ExifTags
 import json
 import uuid
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class FileHandler:
     def __init__(self, base_output_dir):

@@ -9,6 +9,8 @@ pandas
 tesseract
 plotly
 networkx
+pdf2image
+nltk
 numpy
 matplotlib
 seaborn
@@ -16,3 +18,4 @@ nbformat
 python-docx
 openpyxl
 pywin32
+opencv-python

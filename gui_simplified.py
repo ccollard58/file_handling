@@ -15,7 +15,12 @@ class CheckBoxDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         if index.column() == 0:
             # Get the checkbox state from the model
-            checkState = index.model().data(index, Qt.ItemDataRole.CheckStateRole)
+            model = index.model()
+            if model is None:
+                super().paint(painter, option, index)
+                return
+                
+            checkState = model.data(index, Qt.ItemDataRole.CheckStateRole)
             
             # Calculate centered position for a smaller checkbox
             checkbox_size = 13  # Slightly smaller for better fit
@@ -27,7 +32,8 @@ class CheckBoxDelegate(QStyledItemDelegate):
             
             # Draw background if selected
             if option.state & QStyle.StateFlag.State_Selected:
-                painter.fillRect(option.rect, option.palette.highlight())
+                if painter is not None:
+                    painter.fillRect(option.rect, option.palette.highlight())
             
             # Create style option for checkbox
             checkbox_style = QStyleOptionButton()
@@ -38,17 +44,20 @@ class CheckBoxDelegate(QStyledItemDelegate):
                 checkbox_style.state |= QStyle.StateFlag.State_On
             else:
                 checkbox_style.state |= QStyle.StateFlag.State_Off
-            
-            # Draw the checkbox using the application style
+              # Draw the checkbox using the application style
             style = QApplication.style()
-            style.drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorCheckBox, checkbox_style, painter)
+            if style is not None:
+                style.drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorCheckBox, checkbox_style, painter)
         else:
             super().paint(painter, option, index)
     
     def editorEvent(self, event, model, option, index):
         """Handle mouse clicks on the checkbox"""
-        if index.column() == 0 and event.type() == QEvent.Type.MouseButtonRelease:
+        if index.column() == 0 and event is not None and event.type() == QEvent.Type.MouseButtonRelease:
             # Toggle the checkbox state
+            if model is None:
+                return super().editorEvent(event, model, option, index)
+                
             current_state = model.data(index, Qt.ItemDataRole.CheckStateRole)
             new_state = Qt.CheckState.Unchecked if current_state == Qt.CheckState.Checked else Qt.CheckState.Checked
             return model.setData(index, new_state, Qt.ItemDataRole.CheckStateRole)
@@ -273,14 +282,17 @@ class FileOrganizerGUI(QMainWindow):
             header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
-            header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
-
-        # Connect selection change to preview update (only if selectionModel exists)
-        if self.file_view.selectionModel() is not None:
-            self.file_view.selectionModel().selectionChanged.connect(self.update_preview)
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)        # Connect selection change to preview update (only if selectionModel exists)
+        selection_model = self.file_view.selectionModel()
+        if selection_model is not None:
+            selection_model.selectionChanged.connect(self.update_preview)
         else:
             # Defer connection until the event loop starts, to ensure selectionModel is available
-            QTimer.singleShot(0, lambda: self.file_view.selectionModel().selectionChanged.connect(self.update_preview))
+            def connect_when_ready():
+                selection_model = self.file_view.selectionModel()
+                if selection_model is not None:
+                    selection_model.selectionChanged.connect(self.update_preview)
+            QTimer.singleShot(0, connect_when_ready)
     
     def browse_source_folder(self):
         """Browse for source folder and populate file tree"""
@@ -558,15 +570,18 @@ class FileOrganizerGUI(QMainWindow):
                 f"{extracted_text[:5000]}{'...' if len(extracted_text) > 5000 else ''}"
             )
             self.preview_text.setText(preview_text)
-        
-        # Handle Word documents (.doc and .docx)
+          # Handle Word documents (.doc and .docx)
         elif file_ext in ['.doc', '.docx']:
             # Show generic file icon as thumbnail for Word docs
             try:
-                icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-                pixmap = icon.pixmap(100, 100)
-                self.preview_image_label.setPixmap(pixmap)
-                self.preview_image_label.setVisible(True)
+                style = self.style()
+                if style is not None:
+                    icon = style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+                    pixmap = icon.pixmap(100, 100)
+                    self.preview_image_label.setPixmap(pixmap)
+                    self.preview_image_label.setVisible(True)
+                else:
+                    self.preview_image_label.setVisible(False)
             except Exception:
                 self.preview_image_label.setVisible(False)
             try:
@@ -659,7 +674,7 @@ class FileOrganizerGUI(QMainWindow):
             row = index.row()
             column = index.column()
             
-            if row < len(self.analyzed_files):
+            if row < len(self.analyzed_files):                
                 if column == 2:  # New filename
                     self.analyzed_files[row]['new_filename'] = new_text
                 elif column == 3:  # Destination folder
@@ -682,7 +697,8 @@ class FileOrganizerGUI(QMainWindow):
         for row in range(self.file_model.rowCount()):
             index = self.file_model.index(row, 0)
             self.file_model.setData(index, Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
-      def process_files(self):
+    
+    def process_files(self):
         """Process the selected files (move and rename)"""
         selected_files = []
         

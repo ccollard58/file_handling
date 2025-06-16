@@ -12,9 +12,10 @@ class LLMAnalyzer:
     def __init__(self):
         try:
             # Use the same model from the notebook that works with images
-            self.llm = OllamaLLM(model="gemma3:27b-it-fp16")
+            # self.llm = OllamaLLM(model="gemma3:27b-it-fp16")
+            # self.llm = OllamaLLM(model="gemma3:latest")
             # self.llm = OllamaLLM(model="deepseek-r1:8b-0528-qwen3-fp16", temperature=0.6)
-            # self.llm = OllamaLLM(model="qwq:32b-q8_0", temperature=0.6)
+            self.llm = OllamaLLM(model="qwq:32b-q8_0", temperature=0.6)
             # self.llm = OllamaLLM(model="phi4:14b-fp16", temperature=0.2)
             logging.info("LLM initialized successfully")
         except Exception as e:

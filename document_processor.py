@@ -85,7 +85,7 @@ class DocumentProcessor:
                 if ocr_text:
                     text = ocr_text
                 else:
-                    logging.warning(f"OCR failed for PDF {file_path}. Consider installing Poppler for PDF OCR support.")
+                    logging.warning(f"OCR completed for PDF {file_path} but no readable text was found. The document may contain images without text or be too blurry for OCR.")
             # Check if the extracted text contains a reasonable number of real words
             elif not self._has_real_words(text):
                 logging.info(f"Extracted PDF text appears to be garbage, attempting OCR: {file_path}")
@@ -93,7 +93,7 @@ class DocumentProcessor:
                 if ocr_text:
                     text = ocr_text
                 else:
-                    logging.warning(f"OCR failed for PDF {file_path}. The extracted text may be low quality but will be returned.")
+                    logging.warning(f"OCR completed for PDF {file_path} but no readable text was found. The extracted text may be low quality but will be returned.")
                 
             return text
         except Exception as e:
@@ -149,6 +149,8 @@ class DocumentProcessor:
             return ""
         
         text = ""
+        total_pages = 0
+        pages_with_text = 0
         try:
             # Convert PDF pages to images, using poppler_path if specified
             if self.poppler_path:
@@ -156,11 +158,22 @@ class DocumentProcessor:
             else:
                 images = convert_from_path(file_path)
                 
+            total_pages = len(images)
             for i, image in enumerate(images):
                 logging.info(f"Performing OCR on page {i+1} of PDF {file_path}")
                 page_text = pytesseract.image_to_string(image)
-                if page_text:
+                if page_text and page_text.strip():
                     text += page_text + "\n"
+                    pages_with_text += 1
+                    logging.debug(f"Page {i+1} extracted {len(page_text.strip())} characters")
+                else:
+                    logging.debug(f"Page {i+1} extracted no readable text")
+            
+            if text.strip():
+                logging.info(f"OCR completed: extracted text from {pages_with_text}/{total_pages} pages")
+            else:
+                logging.info(f"OCR completed: no readable text found in any of the {total_pages} pages")
+            
             return text
         except Exception as e:
             # Check if the error is related to Poppler not being available

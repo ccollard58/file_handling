@@ -2,6 +2,7 @@ import re
 import os
 import logging
 import json
+import requests
 from datetime import datetime
 from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
@@ -9,18 +10,78 @@ from langchain.prompts import PromptTemplate
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class LLMAnalyzer:
-    def __init__(self):
+    def __init__(self, model="gemma3:latest", temperature=0.6, vision_model="llava:latest"):
+        self.model = model
+        self.temperature = temperature
+        self.vision_model = vision_model
+        self.llm = None
+        self.vision_llm = None
+        self.initialize_llm()
+        self.initialize_vision_llm()
+
+    def initialize_llm(self):
+        """Initializes the OllamaLLM instance."""
         try:
-            # Use the same model from the notebook that works with images
-            # self.llm = OllamaLLM(model="gemma3:27b-it-fp16")
-            # self.llm = OllamaLLM(model="gemma3:latest")
-            # self.llm = OllamaLLM(model="deepseek-r1:8b-0528-qwen3-fp16", temperature=0.6)
-            self.llm = OllamaLLM(model="qwq:32b-q8_0", temperature=0.6)
-            # self.llm = OllamaLLM(model="phi4:14b-fp16", temperature=0.2)
-            logging.info("LLM initialized successfully")
+            self.llm = OllamaLLM(model=self.model, temperature=self.temperature)
+            logging.info(f"LLM initialized successfully with model {self.model} and temperature {self.temperature}")
         except Exception as e:
             logging.error(f"Error initializing LLM: {str(e)}")
+            self.llm = None  # Ensure llm is None if initialization fails
             raise
+
+    def initialize_vision_llm(self):
+        """Initializes the vision-capable OllamaLLM instance."""
+        try:
+            self.vision_llm = OllamaLLM(model=self.vision_model, temperature=self.temperature)
+            logging.info(f"Vision LLM initialized successfully with model {self.vision_model}")
+        except Exception as e:
+            logging.error(f"Error initializing Vision LLM: {str(e)}")
+            self.vision_llm = None
+
+    def update_settings(self, model, temperature, vision_model=None):
+        """Updates the LLM model and temperature and re-initializes the LLM."""
+        self.model = model
+        self.temperature = float(temperature)
+        if vision_model:
+            self.vision_model = vision_model
+        self.initialize_llm()
+        self.initialize_vision_llm()
+
+    @staticmethod
+    def get_available_models(ollama_base_url="http://localhost:11434"):
+        """Fetches available models from the Ollama API."""
+        try:
+            response = requests.get(f"{ollama_base_url}/api/tags")
+            response.raise_for_status()
+            models = response.json().get("models", [])
+            return [model["name"] for model in models]
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error fetching Ollama models: {e}")
+            return []
+
+    @staticmethod
+    def get_vision_models(ollama_base_url="http://localhost:11434"):
+        """Fetches vision-capable models from the Ollama API."""
+        try:
+            response = requests.get(f"{ollama_base_url}/api/tags")
+            response.raise_for_status()
+            models = response.json().get("models", [])
+            all_models = [model["name"] for model in models]
+            
+            # Filter for vision-capable models (common vision model patterns)
+            vision_keywords = ['gemma3', 'qwen2.5vl', 'mistral-small3.1', 'llava', 'vision', 'minicpm', 'moondream', 'bakllava', 'cogvlm']
+            vision_models = []
+            
+            for model in all_models:
+                model_lower = model.lower()
+                if any(keyword in model_lower for keyword in vision_keywords):
+                    vision_models.append(model)
+            
+            # If no vision models found, return all models as fallback
+            return vision_models if vision_models else all_models
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error fetching Ollama vision models: {e}")
+            return []
     
     def analyze_document(self, text, filename, creation_date, file_path=None):
         """
@@ -29,6 +90,10 @@ class LLMAnalyzer:
         Returns:
             dict: Contains identity, date, description, and category
         """
+        if not self.llm:
+            logging.error("LLM not initialized, cannot analyze document.")
+            return self._create_default_result(filename, creation_date)
+
         # Check if this is an image file
         is_image_file = filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif'))
         
@@ -80,7 +145,10 @@ class LLMAnalyzer:
             return self._create_default_result(filename, creation_date)
     
     def _analyze_image_visually(self, file_path, filename, creation_date):
-        """Analyze an image file visually using LLM."""
+        """Analyze an image file visually using Vision LLM."""
+        if not self.vision_llm:
+            logging.error("Vision LLM not initialized, cannot analyze image.")
+            return self._create_image_fallback_result(filename, creation_date)
         try:
             # Create prompt for visual analysis
             prompt = """Analyze this image to extract document information. Look for:
@@ -114,8 +182,8 @@ class LLMAnalyzer:
              }"""
             
             # Use the file path directly with the images parameter (like in the notebook)
-            response = self.llm.invoke(prompt, images=[str(file_path)])
-            logging.debug(f"LLM response for image {filename}: {response}")
+            response = self.vision_llm.invoke(prompt, images=[str(file_path)])
+            logging.debug(f"Vision LLM response for image {filename}: {response}")
         
             # Try to extract JSON from response
             json_match = re.search(r'{.*}', response, re.DOTALL)
@@ -219,6 +287,10 @@ class LLMAnalyzer:
             if re.search(pattern, text, re.IGNORECASE):
                 return "Colleen"
         
+        if not self.llm:
+            logging.warning("LLM not initialized, returning 'Unknown' for identity.")
+            return "Unknown"
+
         # If no match, use LLM to determine the most likely person
         prompt = PromptTemplate(
             input_variables=["text"],
@@ -286,6 +358,10 @@ class LLMAnalyzer:
     
     def _analyze_document_content(self, text, filename):
         """Use LLM to analyze document content and determine category and description."""
+        if not self.llm:
+            logging.error("LLM not initialized, cannot analyze document content.")
+            return {"description": "Unknown Document", "category": "Uncategorized"}
+
         prompt = PromptTemplate(
             input_variables=["text", "filename"],
             template="""

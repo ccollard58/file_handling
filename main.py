@@ -27,8 +27,8 @@ def main():
     
     try:
         # Initialize components
-        document_processor = DocumentProcessor()
-        llm_analyzer = LLMAnalyzer()
+        llm_analyzer = LLMAnalyzer(vision_model="llava:latest")  # Set default vision model
+        document_processor = DocumentProcessor(llm_analyzer)  # Pass llm_analyzer to document processor
         
         # Default output directory is the user's Documents folder
         # For testing, use e:\junk as the output directory

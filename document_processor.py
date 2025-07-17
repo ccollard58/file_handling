@@ -35,7 +35,7 @@ except ImportError:
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class DocumentProcessor:
-    def __init__(self):
+    def __init__(self, llm_analyzer=None):
         # Configure pytesseract path for Windows
         pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
         
@@ -45,6 +45,9 @@ class DocumentProcessor:
         
         # Check if PDF OCR is available
         self.pdf_ocr_available = PDF2IMAGE_AVAILABLE
+        
+        # Store reference to LLM analyzer for vision model access
+        self.llm_analyzer = llm_analyzer
     
     def extract_text(self, file_path):
         """Extract text from PDF or image file."""
@@ -85,15 +88,23 @@ class DocumentProcessor:
                 if ocr_text:
                     text = ocr_text
                 else:
-                    logging.warning(f"OCR completed for PDF {file_path} but no readable text was found. The document may contain images without text or be too blurry for OCR.")
+                    logging.warning(f"OCR completed for PDF {file_path} but no readable text was found. Attempting vision LLM analysis.")
+                    vision_text = self._analyze_pdf_with_vision_llm(file_path)
+                    if vision_text:
+                        text = vision_text
             # Check if the extracted text contains a reasonable number of real words
             elif not self._has_real_words(text):
                 logging.info(f"Extracted PDF text appears to be garbage, attempting OCR: {file_path}")
                 ocr_text = self._perform_ocr_on_pdf(file_path)
-                if ocr_text:
+                if ocr_text and self._has_real_words(ocr_text):
                     text = ocr_text
                 else:
-                    logging.warning(f"OCR completed for PDF {file_path} but no readable text was found. The extracted text may be low quality but will be returned.")
+                    logging.warning(f"OCR completed for PDF {file_path} but text quality is poor. Attempting vision LLM analysis.")
+                    vision_text = self._analyze_pdf_with_vision_llm(file_path)
+                    if vision_text:
+                        text = vision_text
+                    elif ocr_text:
+                        text = ocr_text  # Use OCR text as fallback even if quality is poor
                 
             return text
         except Exception as e:
@@ -132,8 +143,18 @@ class DocumentProcessor:
             if text.strip():
                 text_preview = text.strip()[:50] + ('...' if len(text.strip()) > 50 else '')
                 logging.info(f"OCR extracted {len(text.strip())} chars from '{file_path}': {text_preview}")
+                
+                # Check if OCR text quality is good
+                if not self._has_real_words(text):
+                    logging.info(f"OCR text quality appears poor for {file_path}, attempting vision LLM analysis")
+                    vision_text = self._analyze_image_with_vision_llm(file_path)
+                    if vision_text:
+                        text = vision_text
             else:
-                logging.info(f"OCR extracted no text from '{file_path}'")
+                logging.info(f"OCR extracted no text from '{file_path}', attempting vision LLM analysis")
+                vision_text = self._analyze_image_with_vision_llm(file_path)
+                if vision_text:
+                    text = vision_text
 
             return text
         except Exception as e:
@@ -290,4 +311,105 @@ class DocumentProcessor:
             return text
         except Exception as e:
             logging.error(f"Error processing XLSX {file_path}: {str(e)}")
+            return ""
+    
+    def _analyze_pdf_with_vision_llm(self, file_path):
+        """Analyze PDF with vision-capable LLM when OCR fails."""
+        if not self.pdf_ocr_available:
+            logging.warning("Cannot analyze PDF with vision LLM: pdf2image not available.")
+            return ""
+        
+        if not self.llm_analyzer or not self.llm_analyzer.vision_llm:
+            logging.warning("Vision LLM not available in LLM analyzer.")
+            return ""
+        
+        try:
+            # Convert PDF pages to images
+            if self.poppler_path:
+                images = convert_from_path(file_path, poppler_path=self.poppler_path)
+            else:
+                images = convert_from_path(file_path)
+            
+            if not images:
+                logging.warning(f"Could not convert PDF {file_path} to images for vision analysis.")
+                return ""
+            
+            all_text = ""
+            
+            # Analyze each page with the vision model
+            for i, image in enumerate(images[:5]):  # Limit to first 5 pages to avoid excessive processing
+                try:
+                    # Save image temporarily for LLM analysis
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                        image.save(temp_file.name, 'PNG')
+                        temp_image_path = temp_file.name
+                    
+                    # Create prompt for vision analysis
+                    prompt = f"""Analyze this image from page {i+1} of a PDF document. Please:
+
+1. Extract ALL visible text, including any text that might be handwritten, stylized, or difficult for OCR to read
+2. Describe the type of document this appears to be
+3. Identify any key information like names, dates, amounts, or important details
+4. If no readable text is visible, provide a detailed description of what you can see
+
+Please be thorough in extracting text - include headers, body text, captions, and any other readable content."""
+
+                    # Use the configured vision model to analyze the image
+                    response = self.llm_analyzer.vision_llm.invoke(prompt, images=[temp_image_path])
+                    
+                    if response and response.strip():
+                        all_text += f"[Page {i+1} Vision Analysis]\n{response.strip()}\n\n"
+                        logging.info(f"Vision LLM extracted text from page {i+1}: {len(response.strip())} characters")
+                    
+                    # Clean up temporary file
+                    try:
+                        os.unlink(temp_image_path)
+                    except:
+                        pass
+                        
+                except Exception as e:
+                    logging.error(f"Error analyzing page {i+1} with vision LLM: {e}")
+                    continue
+            
+            if all_text.strip():
+                logging.info(f"Vision LLM analysis completed for {file_path}: {len(all_text.strip())} total characters extracted")
+                return all_text.strip()
+            else:
+                logging.warning(f"Vision LLM analysis completed but no text extracted from {file_path}")
+                return ""
+                
+        except Exception as e:
+            logging.error(f"Error in vision LLM analysis for {file_path}: {e}")
+            return ""
+    
+    def _analyze_image_with_vision_llm(self, file_path):
+        """Analyze image with vision-capable LLM when OCR fails."""
+        if not self.llm_analyzer or not self.llm_analyzer.vision_llm:
+            logging.warning("Vision LLM not available in LLM analyzer.")
+            return ""
+        
+        try:
+            # Create prompt for vision analysis
+            prompt = """Analyze this image carefully. Please:
+
+1. Extract ALL visible text, including any text that might be handwritten, stylized, watermarked, or difficult for OCR to read
+2. Describe the type of document or image this appears to be
+3. Identify any key information like names, dates, amounts, addresses, or important details
+4. If no readable text is visible, provide a detailed description of what you can see
+
+Please be thorough in extracting text - include any headers, body text, captions, labels, and any other readable content, no matter how small or stylized."""
+
+            # Use the configured vision model to analyze the image
+            response = self.llm_analyzer.vision_llm.invoke(prompt, images=[str(file_path)])
+            
+            if response and response.strip():
+                logging.info(f"Vision LLM extracted text from image {file_path}: {len(response.strip())} characters")
+                return f"[Vision LLM Analysis]\n{response.strip()}"
+            else:
+                logging.warning(f"Vision LLM analysis completed but no text extracted from {file_path}")
+                return ""
+                
+        except Exception as e:
+            logging.error(f"Error in vision LLM analysis for image {file_path}: {e}")
             return ""

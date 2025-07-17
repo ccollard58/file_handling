@@ -25,7 +25,11 @@ class FileHandler:
         
     def _ensure_directories(self):    
         """Ensure all necessary directories exist."""
-        categories = ["Medical", "Receipts", "Contracts", "Photographs", "Other"]
+        categories = [
+            "Medical", "Identification", "Home", "Auto", "SysAdmin",
+            "School", "Cooking", "Financial", "Travel", "Employment",
+            "Photography", "Hobbies", "Memories", "Other"
+        ]
         for category in categories:
             dir_path = os.path.join(self.base_output_dir, category)
             if not os.path.exists(dir_path):
@@ -116,12 +120,20 @@ class FileHandler:
     def move_and_rename_file(self, original_path, new_filename, destination_path, analysis_result, extracted_text):
         """Move and rename the file, adding metadata if appropriate."""
         try:
+            logging.info(f"Moving file from {original_path} to {destination_path}/{new_filename}")
+            
+            # Validate input paths
+            if not os.path.exists(original_path):
+                raise FileNotFoundError(f"Source file does not exist: {original_path}")
+            
             # Ensure destination directory exists
             if not os.path.exists(destination_path):
-                os.makedirs(destination_path)
+                logging.info(f"Creating destination directory: {destination_path}")
+                os.makedirs(destination_path, exist_ok=True)
             
             # Create the full destination path
             new_path = os.path.join(destination_path, new_filename)
+            logging.debug(f"Full destination path: {new_path}")
             
             # Check if destination file already exists
             counter = 1
@@ -133,9 +145,11 @@ class FileHandler:
             # Backup original file before moving
             backup_name = f"{uuid.uuid4()}_{os.path.basename(original_path)}"
             backup_path = os.path.join(self.backup_dir, backup_name)
+            logging.debug(f"Creating backup at: {backup_path}")
             shutil.copy2(original_path, backup_path)
 
             # Copy (move) the file to new location
+            logging.debug(f"Moving file from {original_path} to {new_path}")
             shutil.move(original_path, new_path)
             
             # Log the action for possible undo
@@ -146,11 +160,13 @@ class FileHandler:
             if file_ext in ['.jpg', '.jpeg']:
                 self.add_metadata_to_image(new_path, analysis_result, extracted_text)
             
-            logging.info(f"File moved and renamed: {new_path}")
+            logging.info(f"File moved and renamed successfully: {new_path}")
             
             return new_path
         except Exception as e:
             logging.error(f"Error moving file {original_path}: {str(e)}")
+            logging.error(f"Destination path was: {destination_path}")
+            logging.error(f"New filename was: {new_filename}")
             return None
 
     def _load_actions(self):

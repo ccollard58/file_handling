@@ -1,10 +1,12 @@
 import os
 import sys
+import json
+import logging
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
-                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton)
+                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton)
 from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter
 from PyQt6.QtPdf import QPdfDocument
@@ -103,20 +105,76 @@ class FileOrganizerGUI(QMainWindow):
         self.analyzed_files = []  # Will store analysis results
         self.current_folder = None  # Current selected folder
         
-        # Set default output folder
-        default_output = r"E:\scanned documents"
+        # Configuration file path
+        self.config_file = os.path.join(os.path.expanduser("~"), ".document_organizer_config.json")
+        
+        # Load saved configuration
+        self.config = self.load_config()
+        
+        # Set default output folder from config or fallback
+        default_output = self.config.get("output_folder", r"E:\scanned documents")
         self.file_handler.base_output_dir = default_output
         self.file_handler._ensure_directories()
         
-        # Set default source folder to Documents
-        # For testing, use E:\Documents as the default source folder
-        default_source = r"E:\Documents"
+        # Set default source folder from config
+        default_source = self.config.get("source_folder", r"E:\Documents")
         
         self.init_ui()
-        self.output_folder_edit.setText(self.file_handler.base_output_dir)  # Show default folder
+        self.output_folder_edit.setText(self.file_handler.base_output_dir)  # Show configured folder
         
         # Set the default source folder
         self.set_default_source_folder(default_source)
+        
+        # Restore LLM settings from config
+        self.restore_llm_settings()
+    
+    def load_config(self):
+        """Load configuration from file."""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r') as f:
+                    config = json.load(f)
+                    logging.info(f"Loaded configuration from {self.config_file}")
+                    return config
+            else:
+                logging.info("No configuration file found, using defaults")
+                return {}
+        except Exception as e:
+            logging.error(f"Error loading configuration: {e}")
+            return {}
+    
+    def save_config(self):
+        """Save current configuration to file."""
+        try:
+            config = {
+                "output_folder": self.file_handler.base_output_dir,
+                "source_folder": self.current_folder,
+                "llm_settings": {
+                    "model": self.llm_analyzer.model,
+                    "vision_model": self.llm_analyzer.vision_model,
+                    "temperature": self.llm_analyzer.temperature
+                }
+            }
+            with open(self.config_file, 'w') as f:
+                json.dump(config, f, indent=2)
+                logging.info(f"Saved configuration to {self.config_file}")
+        except Exception as e:
+            logging.error(f"Error saving configuration: {e}")
+    
+    def restore_llm_settings(self):
+        """Restore LLM settings from configuration."""
+        try:
+            llm_settings = self.config.get("llm_settings", {})
+            if llm_settings:
+                model = llm_settings.get("model", self.llm_analyzer.model)
+                vision_model = llm_settings.get("vision_model", self.llm_analyzer.vision_model)
+                temperature = llm_settings.get("temperature", self.llm_analyzer.temperature)
+                
+                # Update LLM analyzer with saved settings
+                self.llm_analyzer.update_settings(model, temperature, vision_model)
+                logging.info(f"Restored LLM settings - Model: {model}, Vision: {vision_model}, Temp: {temperature}")
+        except Exception as e:
+            logging.error(f"Error restoring LLM settings: {e}")
     
     def init_ui(self):
         """Initialize the simplified user interface"""
@@ -142,6 +200,9 @@ class FileOrganizerGUI(QMainWindow):
         output_layout.addWidget(self.browse_output_btn)
         
         main_layout.addWidget(output_widget)
+        
+        # Add expandable settings section
+        self.create_settings_group(main_layout)
         
         # Create splitter for two-panel layout
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -294,6 +355,156 @@ class FileOrganizerGUI(QMainWindow):
                     selection_model.selectionChanged.connect(self.update_preview)
             QTimer.singleShot(0, connect_when_ready)
     
+    def create_settings_group(self, parent_layout):
+        """Creates a collapsible settings section."""
+        # Toggle button for expanding/collapsing settings
+        self.settings_toggle = QToolButton()
+        self.settings_toggle.setText("Settings...")
+        self.settings_toggle.setCheckable(True)
+        self.settings_toggle.setChecked(False)
+        self.settings_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.settings_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.settings_toggle.toggled.connect(self.on_settings_toggled)
+        parent_layout.addWidget(self.settings_toggle)
+
+        # Container for actual settings widgets
+        self.settings_container = QWidget()
+        self.settings_container.setVisible(False)
+        settings_layout = QGridLayout(self.settings_container)
+        
+        # Model selection
+        settings_layout.addWidget(QLabel("Text Model:"), 0, 0)
+        self.model_combo = QComboBox()
+        settings_layout.addWidget(self.model_combo, 0, 1)
+        
+        # Refresh models button
+        self.refresh_models_btn = QPushButton("Refresh")
+        self.refresh_models_btn.clicked.connect(self.populate_models)
+        settings_layout.addWidget(self.refresh_models_btn, 0, 2)
+        
+        # Vision model selection
+        settings_layout.addWidget(QLabel("Vision Model:"), 1, 0)
+        self.vision_model_combo = QComboBox()
+        settings_layout.addWidget(self.vision_model_combo, 1, 1)
+        
+        # Refresh vision models button
+        self.refresh_vision_models_btn = QPushButton("Refresh")
+        self.refresh_vision_models_btn.clicked.connect(self.populate_vision_models)
+        settings_layout.addWidget(self.refresh_vision_models_btn, 1, 2)
+        
+        # Temperature setting
+        settings_layout.addWidget(QLabel("Temperature:"), 2, 0)
+        self.temp_edit = QLineEdit()
+        self.temp_edit.setPlaceholderText("e.g., 0.6")
+        settings_layout.addWidget(self.temp_edit, 2, 1)
+        
+        # Apply button
+        self.apply_settings_btn = QPushButton("Apply Settings")
+        self.apply_settings_btn.clicked.connect(self.apply_settings)
+        settings_layout.addWidget(self.apply_settings_btn, 3, 0)
+        
+        parent_layout.addWidget(self.settings_container)
+        # Populate initial values
+        self.populate_settings()
+        
+        # Connect change signals to track when settings are modified
+        self.model_combo.currentTextChanged.connect(self.on_settings_changed)
+        self.vision_model_combo.currentTextChanged.connect(self.on_settings_changed)
+        self.temp_edit.textChanged.connect(self.on_settings_changed)
+    
+    def on_settings_toggled(self, checked):
+        """Expand or collapse the settings container."""
+        # Update arrow direction
+        arrow = Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
+        self.settings_toggle.setArrowType(arrow)
+        # Show or hide settings
+        self.settings_container.setVisible(checked)
+    
+    def on_settings_changed(self):
+        """Called when any setting is changed to indicate changes need to be applied."""
+        self.apply_settings_btn.setStyleSheet("QPushButton { background-color: #ff4444; color: white; font-weight: bold; }")
+        self.apply_settings_btn.setText("Apply Settings*")
+    
+    def reset_apply_button(self):
+        """Reset the apply button to normal appearance after applying settings."""
+        self.apply_settings_btn.setStyleSheet("")
+        self.apply_settings_btn.setText("Apply Settings")
+
+    def populate_settings(self):
+        """Populates the settings controls with current values."""
+        self.populate_models()
+        self.populate_vision_models()
+        self.temp_edit.setText(str(self.llm_analyzer.temperature))
+        self.reset_apply_button()  # Reset button when populating with current values
+
+    def populate_models(self):
+        """Populates the model dropdown."""
+        self.model_combo.clear()
+        try:
+            # Use the static method to get models
+            available_models = self.llm_analyzer.get_available_models()
+            if available_models:
+                self.model_combo.addItems(available_models)
+                current_model = self.llm_analyzer.model
+                if current_model in available_models:
+                    self.model_combo.setCurrentText(current_model)
+                else:
+                    # If current model not in list, add it to avoid confusion
+                    self.model_combo.addItem(current_model)
+                    self.model_combo.setCurrentText(current_model)
+            else:
+                self.model_combo.addItem("No models found")
+                QMessageBox.warning(self, "Ollama Models", "Could not fetch models from Ollama. Is it running?")
+        except Exception as e:
+            self.model_combo.addItem("Error fetching models")
+            QMessageBox.critical(self, "Ollama Error", f"An error occurred while fetching models: {e}")
+
+    def populate_vision_models(self):
+        """Populates the vision model dropdown."""
+        self.vision_model_combo.clear()
+        try:
+            # Use the static method to get vision models
+            available_models = self.llm_analyzer.get_vision_models()
+            if available_models:
+                self.vision_model_combo.addItems(available_models)
+                current_model = self.llm_analyzer.vision_model
+                if current_model in available_models:
+                    self.vision_model_combo.setCurrentText(current_model)
+                else:
+                    # If current model not in list, add it to avoid confusion
+                    self.vision_model_combo.addItem(current_model)
+                    self.vision_model_combo.setCurrentText(current_model)
+            else:
+                self.vision_model_combo.addItem("No vision models found")
+                QMessageBox.warning(self, "Ollama Vision Models", "Could not fetch vision models from Ollama. Consider installing a vision model like 'llava'.")
+        except Exception as e:
+            self.vision_model_combo.addItem("Error fetching vision models")
+            QMessageBox.critical(self, "Ollama Error", f"An error occurred while fetching vision models: {e}")
+
+    def apply_settings(self):
+        """Applies the new settings to the LLM analyzer."""
+        model = self.model_combo.currentText()
+        vision_model = self.vision_model_combo.currentText()
+        temperature_str = self.temp_edit.text()
+        
+        try:
+            temperature = float(temperature_str)
+            if not (0.0 <= temperature <= 2.0):
+                raise ValueError("Temperature must be between 0.0 and 2.0")
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid Temperature", f"Please enter a valid number for temperature (e.g., 0.6).\n{e}")
+            return
+            
+        try:
+            self.llm_analyzer.update_settings(model, temperature, vision_model)
+            self.reset_apply_button()  # Reset button appearance after successful apply
+            QMessageBox.information(self, "Settings Updated", f"LLM settings updated successfully.\nText Model: {model}\nVision Model: {vision_model}\nTemperature: {temperature}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error Updating Settings", f"Failed to update LLM settings: {e}")
+            
+        # Save configuration after applying settings
+        self.save_config()
+
     def browse_source_folder(self):
         """Browse for source folder and populate file tree"""
         folder = QFileDialog.getExistingDirectory(self, "Select Source Folder")
@@ -314,7 +525,10 @@ class FileOrganizerGUI(QMainWindow):
             self.file_tree.hideColumn(1)  # Size
             self.file_tree.hideColumn(2)  # Type
             self.file_tree.hideColumn(3)  # Date Modified
-    
+            
+            # Save configuration
+            self.save_config()
+
     def browse_output_folder(self):
         """Browse for output folder"""
         folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
@@ -322,6 +536,9 @@ class FileOrganizerGUI(QMainWindow):
             self.output_folder_edit.setText(folder)
             self.file_handler.base_output_dir = folder
             self.file_handler._ensure_directories()
+            
+            # Save configuration
+            self.save_config()
     
     def get_selected_files(self):
         """Get list of selected files or folders and return supported files"""
@@ -802,6 +1019,11 @@ class FileOrganizerGUI(QMainWindow):
             # Refresh source folder view after moving files
             self.file_system_model.setRootPath(self.current_folder)
             self.file_tree.setRootIndex(self.file_system_model.index(self.current_folder))
+
+    def closeEvent(self, event):
+        """Save configuration when the application is closing."""
+        self.save_config()
+        event.accept()
 
     def set_default_source_folder(self, folder_path):
         """Set the default source folder and initialize the file browser"""

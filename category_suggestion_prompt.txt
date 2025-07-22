@@ -1,0 +1,38 @@
+
+        I need to organize personal and family documents into meaningful categories.
+        
+        Currently, I'm using these categories:
+        Medical Documents, Receipts, Contracts, Photographs, Other
+        
+        I also have documents organized in these folders:
+        COBRA - 2021, house, Mind Maps, Instructions, 2014 tax documents, Medical, Financial, Colleen Misc, Receipts, Official Docs, for others, Scanned Documents, COBRA
+        
+        Here are some sample document descriptions from my collection:
+        Daily Planner Notes, Unknown Document, Apple Raisin Crisp Recipe, Behavior Diagram Notes, Behavioral Psychology Notes, Mountain Biking Techniques, BMW Warranty Extension, Bruce Romer Jewelry Services, Charles in Chinese, Cheese Cake Recipe, Unknown Document, First Adobe Check, Adobe Check Payment, Medical Prescription Charles Collard, Image analysis not possible, Unknown Document, Order & Shipping Policies, Daily Planner Notes, Digital Filters Reference, Dulera Inhaler Prescription, Eggplant Sandwiches Recipe, ESXi CLI Commands, Fault Error Failure Analysis, Document for Ken Collard, Friends Family Info, Goals Document, Unknown Document, Unknown Document, Kinetic Trainer Warranty Card, Unknown Document, Eye Exam Prescription, Pupillary Distance Waiver, Baking Stone Guide, Poblano-Chorizo Tacos, Chorizo Potato Tacos Recipe, Spicy Potato Tacos, Fish Tacos with Tomatillo Sauce, Steak and Shrimp Tacos, Taco Recipes, Beef Tacos Recipe, Supercrunch Tacos Recipe, Bike Frame Warranty Info, Bicycle Dealer Resources, Img 0374, Grand Junction Visitor Guide, Colorado Attractions Guide, Marriott Grand Junction Hotel, Highway 191 Notes, Locations List, Magnificent Image
+        
+        Some of the current categories assigned to these documents are:
+        Other, Other, Other, Other, Medical Documents, Other, Contracts, Other, Other, Other, Other, Other, Other, Medical Documents, Other, Other, Other, Other, Other, Medical Documents, Other, Other, Other, Other, Other, Other, Other, Other, Other, Other, Medical Documents, Contracts, Other, Other, Other, Other, Other, Other, Other, Other, Other, Contracts, Other, Photographs, Other, Other, Other, Other, Other, Other
+        
+        Based on this information, please suggest:
+        1. An improved list of 8-12 categories that would be most useful for organizing and finding documents
+        2. A brief explanation of each category
+        3. Examples of what types of documents belong in each category
+        
+        Focus on categories that are:
+        - Mutually exclusive (minimal overlap)
+        - Collectively exhaustive (cover all document types)
+        - Intuitive for everyday use
+        - Useful for quickly finding specific documents
+        
+        Return your response as a JSON object with this structure:
+        {
+            "categories": [
+                {
+                    "name": "Category Name",
+                    "description": "Brief description",
+                    "examples": ["Example doc 1", "Example doc 2"]
+                },
+                ...
+            ]
+        }
+        

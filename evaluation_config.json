@@ -1,0 +1,91 @@
+{
+  "evaluation_config": {
+    "ollama_base_url": "http://localhost:11434",
+    "judge_model": "llama3.1:latest",
+    "default_temperature": 0.0,
+    "max_pages_per_pdf": 5,
+    "image_dpi": 300,
+    "timeout_seconds": 300
+  },
+  "metrics_weights": {
+    "character_accuracy": 0.30,
+    "semantic_similarity": 0.40,
+    "word_error_rate": 0.20,
+    "levenshtein_distance": 0.10
+  },
+  "vision_model_keywords": [
+    "llava",
+    "vision", 
+    "multimodal",
+    "minicpm",
+    "moondream",
+    "bakllava",
+    "cogvlm",
+    "qwen2-vl",
+    "qwen2.5-vl",
+    "pixtral",
+    "gemma2-vl",
+    "phi3.5-vision",
+    "llama3.2-vision"
+  ],
+  "text_cleaning": {
+    "remove_page_markers": true,
+    "normalize_whitespace": true,
+    "case_insensitive_comparison": true,
+    "remove_special_chars": false
+  },
+  "output_settings": {
+    "save_extracted_text": true,
+    "save_detailed_json": true,
+    "save_human_readable_report": true,
+    "include_sample_text_length": 200,
+    "timestamp_format": "%Y%m%d_%H%M%S"
+  },
+  "prompts": {
+    "vision_extraction": "Please carefully examine this image from page {page_num} and extract ALL visible text.\n\nPay special attention to:\n1. Handwritten text (cursive, print, or mixed)\n2. Typed or printed text\n3. Numbers, dates, and special characters\n4. Headers, footers, and margins\n5. Any text that might be faint, stylized, or difficult to read\n\nPlease transcribe the text exactly as it appears, maintaining the original formatting and line breaks where possible. If you cannot read certain words clearly, indicate this with [unclear] but still provide your best interpretation.\n\nBe thorough and systematic in your transcription.",
+    
+    "semantic_similarity_judge": "You are an expert evaluator assessing the semantic similarity between two text passages. The first passage is the ground truth reference, and the second is a machine-generated transcription.\n\nPlease rate the semantic similarity on a scale from 0.0 to 1.0, where:\n- 1.0 = Perfect semantic match (meaning is identical)\n- 0.8-0.9 = Very high similarity (minor differences that don't change meaning)\n- 0.6-0.7 = Good similarity (some differences but core meaning preserved)\n- 0.4-0.5 = Moderate similarity (partial meaning preserved)\n- 0.2-0.3 = Low similarity (little meaning preserved)\n- 0.0-0.1 = No meaningful similarity\n\nConsider:\n- Overall meaning and intent\n- Key information preservation\n- Contextual understanding\n- Important details retention\n\nReference Text:\n{reference}\n\nGenerated Text:\n{hypothesis}\n\nRespond with only a single number between 0.0 and 1.0 representing the semantic similarity score."
+  },
+  "recommended_models": [
+    {
+      "name": "llava:latest",
+      "description": "General-purpose vision model, good balance of speed and accuracy",
+      "install_command": "ollama pull llava:latest"
+    },
+    {
+      "name": "qwen2.5-vl:latest", 
+      "description": "High-performance vision-language model, excellent for text extraction",
+      "install_command": "ollama pull qwen2.5-vl:latest"
+    },
+    {
+      "name": "moondream:latest",
+      "description": "Compact vision model, faster inference with good accuracy",
+      "install_command": "ollama pull moondream:latest"
+    },
+    {
+      "name": "phi3.5-vision:latest",
+      "description": "Microsoft's vision model, good for document understanding",
+      "install_command": "ollama pull phi3.5-vision:latest"
+    }
+  ],
+  "troubleshooting": {
+    "common_issues": {
+      "no_vision_models": {
+        "error": "No vision-capable models found",
+        "solution": "Install a vision model: ollama pull llava:latest"
+      },
+      "ollama_connection": {
+        "error": "Cannot connect to Ollama server", 
+        "solution": "Start Ollama server: ollama serve"
+      },
+      "pdf_processing": {
+        "error": "PDF processing failed",
+        "solution": "Install dependencies: pip install PyMuPDF pdf2image"
+      },
+      "poppler_missing": {
+        "error": "Poppler not found (Windows)",
+        "solution": "Download from https://poppler.freedesktop.org/ or install via conda"
+      }
+    }
+  }
+}

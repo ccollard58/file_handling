@@ -5,6 +5,7 @@ import logging
 from PIL import Image, ExifTags
 import json
 import uuid
+import time
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -159,6 +160,31 @@ class FileHandler:
             file_ext = os.path.splitext(original_path)[1].lower()
             if file_ext in ['.jpg', '.jpeg']:
                 self.add_metadata_to_image(new_path, analysis_result, extracted_text)
+
+            # Set the file's modification date
+            try:
+                target_date_str = analysis_result.get("date")
+                target_timestamp = None
+                
+                if target_date_str:
+                    try:
+                        # Attempt to parse the date from LLM analysis
+                        dt_obj = datetime.strptime(target_date_str, "%Y-%m-%d")
+                        target_timestamp = dt_obj.timestamp()
+                    except ValueError:
+                        logging.warning(f"Could not parse date '{target_date_str}' from analysis. Falling back to file creation date.")
+                
+                if target_timestamp is None:
+                    # Fallback to original file's creation date (scan date)
+                    creation_time = self.get_file_creation_date(backup_path) # Use backup to get original metadata
+                    target_timestamp = creation_time.timestamp()
+
+                # Set access and modification times
+                os.utime(new_path, (target_timestamp, target_timestamp))
+                logging.info(f"Set modification date for {new_path} to {datetime.fromtimestamp(target_timestamp)}")
+
+            except Exception as e:
+                logging.error(f"Failed to set modification date for {new_path}: {str(e)}")
             
             logging.info(f"File moved and renamed successfully: {new_path}")
             

@@ -1,0 +1,18 @@
+RECEIPT
+
+Target Store #1234
+123 Main Street
+Anytown, ST 12345
+
+Date: 2024-05-15
+Time: 14:30
+
+Items:
+- Groceries        $45.67
+- Household items  $23.45
+- Tax              $6.91
+
+Total: $75.03
+
+Payment: Credit Card ****1234
+Thank you for shopping!

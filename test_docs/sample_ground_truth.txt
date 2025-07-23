@@ -1,0 +1,48 @@
+Medical Report
+
+Patient: Chuck Collard
+Date: 2024-03-15
+Doctor: Dr. Smith
+Clinic: Family Health Center
+
+Chief Complaint: Annual physical examination
+
+Vital Signs:
+- Blood pressure: 120/80 mmHg
+- Temperature: 98.6°F
+- Weight: 175 lbs
+- Height: 5'10"
+- Pulse: 72 bpm
+- Respirations: 16/min
+
+Physical Examination:
+General: Patient appears healthy and in no acute distress
+HEENT: Normal examination
+Cardiovascular: Regular rate and rhythm, no murmurs
+Pulmonary: Clear to auscultation bilaterally
+Abdomen: Soft, non-tender, no masses
+Extremities: No edema, full range of motion
+
+Laboratory Results:
+- Complete Blood Count: Within normal limits
+- Comprehensive Metabolic Panel: Normal
+- Lipid Panel: Total cholesterol 185 mg/dL
+- HbA1c: 5.2%
+
+Assessment and Plan:
+Patient is in excellent health with no acute concerns. 
+Continue current lifestyle and preventive care.
+
+Recommendations:
+1. Continue current exercise routine
+2. Maintain healthy diet
+3. Schedule follow-up in 12 months
+4. Consider annual colonoscopy screening
+
+Medications:
+- Vitamin D3 1000IU daily
+- Multivitamin as needed
+
+Provider: Dr. Smith, MD
+Date of Service: March 15, 2024
+Next Appointment: March 15, 2025

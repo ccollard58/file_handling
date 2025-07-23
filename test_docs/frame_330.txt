@@ -1,0 +1,157 @@
+ioif
+rdf4j-mtip
+C:/Users/tommy/PyCharmProjects/ioif
+app
+ioif-core
+docs
+src
+library root
+ioif_core
+init.py
+AnalysisInterface.py
+config.py
+Exceptions.py
+ExternalInterface.py
+IoIFunctions.py
+IoIFInterface.py
+IoIFParsers.py
+Mapping.py
+NeptuneAdapter.py
+NodeManager.py
+SMoCLip.py
+SPARQL_logic.py
+Store.py
+TableAdapters.py
+TableDataParser.py
+TripletStoreClients.py
+TWRInterface.py
+utils.py
+VersionManager.py
+ExternalInterface.py
+def db_merge
+repo_model
+is_df
+match_key
+put_data
+top_results
+None
+results
+inst_dict
+strict
+False
+backfill
+backfill_chars
+Get normalization key variable(s) and control typing
+non_keys
+kwargs.get
+normalize
+not isinstance
+non_keys
+list
+norm_keys
+non_keys
+inst_dict
+None
+inst_dict
+get
+ioif instances
+id_key
+instances.get
+id_key
+isinstance
+id_key
+str
+id_key
+id_key
+Lookups for matching and new instance creation templates
+puts
+profiles
+self.make_profile
+instances
+profile
+match_key
+Set up normalization lookups
+norms
+norm_keys
+for n in
+norm_keys
+for n in
+profiles
+if n
+profiles
+get
+profiles
+get
+norms
+level
+val
+logic
+past_level
+self.is_in_dict
+instances
+vProfiles
+norms
+profiles
+level
+past_level
+norms
+profiles
+cols
+c.replace
+old
+new
+replace
+old
+new
+for c in
+df.loc
+index
+isinstance
+str
+for row in
+df.iterrows
+for n in
+match_keys
+norm
+set
+backfill
+df
+row
+i
+backfill_chars
+instances.get
+id_key
+normalized
+if n
+norms
+if n
+norms
+normalized
+norms
+write
+False
+for inst in
+profiles
+matches
+row
+profiles
+inst
+get
+False
+for n in
+match_key
+BK
+DH
+AC
+TH
+WW
+MB
+SH
+Keiser,
+Howell,
+Boateng,
+Cline,
+Tom Hagedorn
+Wong,
+Mark Black,
+Steve H...

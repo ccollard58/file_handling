@@ -30,10 +30,10 @@ class LLMAnalyzer:
             raise
 
     def initialize_vision_llm(self):
-        """Initializes the vision-capable OllamaLLM instance."""
+        """Initializes the vision-capable OllamaLLM instance with temperature 0.0 for deterministic analysis."""
         try:
-            self.vision_llm = OllamaLLM(model=self.vision_model, temperature=self.temperature)
-            logging.info(f"Vision LLM initialized successfully with model {self.vision_model}")
+            self.vision_llm = OllamaLLM(model=self.vision_model, temperature=0.0)
+            logging.info(f"Vision LLM initialized successfully with model {self.vision_model} and temperature 0.0")
         except Exception as e:
             logging.error(f"Error initializing Vision LLM: {str(e)}")
             self.vision_llm = None
@@ -57,6 +57,31 @@ class LLMAnalyzer:
             return [model["name"] for model in models]
         except requests.exceptions.RequestException as e:
             logging.error(f"Error fetching Ollama models: {e}")
+            return []
+
+    @staticmethod
+    def get_text_models(ollama_base_url="http://localhost:11434"):
+        """Fetches text/reasoning models from the Ollama API (excludes vision models)."""
+        try:
+            response = requests.get(f"{ollama_base_url}/api/tags")
+            response.raise_for_status()
+            models = response.json().get("models", [])
+            all_models = [model["name"] for model in models]
+            
+            # Filter out vision-capable models (common vision model patterns)
+            vision_keywords = ['gemma3', 'qwen2.5vl', 'mistral-small3.1', 'llava', 'vision', 'minicpm', 'moondream', 'bakllava', 'cogvlm']
+            text_models = []
+            
+            for model in all_models:
+                model_lower = model.lower()
+                # Include model only if it doesn't contain vision keywords
+                if not any(keyword in model_lower for keyword in vision_keywords):
+                    text_models.append(model)
+            
+            # If no text models found, return all models as fallback
+            return text_models if text_models else all_models
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error fetching Ollama text models: {e}")
             return []
 
     @staticmethod

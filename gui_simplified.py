@@ -441,8 +441,8 @@ class FileOrganizerGUI(QMainWindow):
         """Populates the model dropdown."""
         self.model_combo.clear()
         try:
-            # Use the static method to get models
-            available_models = self.llm_analyzer.get_available_models()
+            # Use the static method to get text models (excludes vision models)
+            available_models = self.llm_analyzer.get_text_models()
             if available_models:
                 self.model_combo.addItems(available_models)
                 current_model = self.llm_analyzer.model

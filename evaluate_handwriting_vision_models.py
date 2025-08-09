@@ -224,7 +224,7 @@ class VisionModelEvaluator:
             vision_keywords = [
                 'llava', 'vision', 'multimodal', 'minicpm', 'moondream', 
                 'bakllava', 'cogvlm', 'vl', 'qwen2.5-vl', 'pixtral',
-                'qwq', 'phi3.5-vision', 'llama3.2-vision', 'mistral-small',
+                'qwq', 'mistral-small',
                 'gemma3', 'llama4'
             ]
             

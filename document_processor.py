@@ -32,8 +32,6 @@ except ImportError:
     PDF2IMAGE_AVAILABLE = False
     logging.warning("pdf2image not available. PDF OCR will be disabled.")
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-
 class DocumentProcessor:
     def __init__(self, llm_analyzer=None):
         # Configure pytesseract path for Windows

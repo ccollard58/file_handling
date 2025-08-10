@@ -7,8 +7,6 @@ from datetime import datetime
 from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-
 class LLMAnalyzer:
     def __init__(self, model="gemma3:latest", temperature=0.6, vision_model="llava:latest"):
         self.model = model
@@ -208,9 +206,17 @@ class LLMAnalyzer:
                  "document_type": "What type of document this appears to be"
              }"""
             
+            logging.info("=== VISION LLM ANALYSIS ===")
+            logging.info(f"Vision Model: {self.vision_model}")
+            logging.info(f"Analyzing image: {filename}")
+            logging.info(f"File path: {file_path}")
+            logging.debug(f"Full prompt sent to Vision LLM:\n{prompt}")
+            
             # Use the file path directly with the images parameter (like in the notebook)
             response = self.vision_llm.invoke(prompt, images=[str(file_path)])
-            logging.debug(f"Vision LLM response for image {filename}: {response}")
+            
+            logging.info(f"Vision LLM response: {response.strip()}")
+            logging.info("=== END VISION LLM ANALYSIS ===")
         
             # Improved JSON extraction - find the first complete JSON object
             json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response)
@@ -221,6 +227,7 @@ class LLMAnalyzer:
             if json_match:
                 try:
                     result = json.loads(json_match.group(0))
+                    logging.debug(f"Successfully extracted JSON from vision analysis: {result}")
                     
                     # Extract date from filename or use creation date
                     date = self._extract_date("", filename, creation_date)
@@ -310,30 +317,51 @@ class LLMAnalyzer:
         ]
         
         colleen_patterns = [
-            r"Colleen\s+McGinnis", r"Colleen\s+Collard"
+            r"Colleen\s+McGinnis", r"Colleen\s+Collard", r"Colleen\s+Mueginnis"
         ]
         
         # Check for Chuck
         for pattern in chuck_patterns:
             if re.search(pattern, text, re.IGNORECASE):
+                logging.debug(f"Identity detected as Chuck via pattern: {pattern}")
                 return "Chuck"
         
         # Check for Colleen
         for pattern in colleen_patterns:
             if re.search(pattern, text, re.IGNORECASE):
+                logging.debug(f"Identity detected as Colleen via pattern: {pattern}")
                 return "Colleen"
         
         if not self.llm:
             logging.warning("LLM not initialized, returning 'Unknown' for identity.")
             return "Unknown"
 
+        # Check if this is clearly a church-related document
+        church_keywords = [
+            'church', 'catholic', 'diocese', 'parish', 'volunteer', 'ministry', 
+            'religious', 'faith', 'congregation', 'liturgy', 'mass', 'prayer',
+            'sacrament', 'confirmation', 'communion', 'baptism'
+        ]
+        
+        text_lower = text.lower()
+        is_church_related = any(keyword in text_lower for keyword in church_keywords)
+        
+        if is_church_related:
+            logging.info("Document appears church-related, assigning to Colleen")
+            return "Colleen"
+
         # If no match, use LLM to determine the most likely person
         prompt = PromptTemplate(
             input_variables=["text"],
             template="""
             Based on the following document text, determine if it most likely belongs to "Chuck Collard" 
-            (also known as "Charles Collard" or "Charles W Collard") or "Colleen McGinnis" (also known as "Colleen Collard").
-            If the document is related to the catholic church, then it probably belongs to Colleen.
+            (also known as "Charles Collard" or "Charles W Collard") or "Colleen McGinnis" (also known as "Colleen Collard" or "Colleen Mueginnis").
+            
+            IMPORTANT RULES:
+            - If the document is related to the Catholic Church, religious activities, volunteering at church, 
+              or contains terms like "diocese", "parish", "ministry", "faith", then it belongs to Colleen.
+            - If the document contains any church-related content, always assign it to Colleen.
+            - Look for any variation of the names including different spellings.
 
             Document text:
             {text}
@@ -342,13 +370,25 @@ class LLMAnalyzer:
             """
         )
         
-        response = self.llm.invoke(prompt.format(text=text[:1000]))  # Use first 1000 chars for efficiency
+        formatted_prompt = prompt.format(text=text[:1000])
+        logging.info("=== LLM IDENTITY DETECTION ===")
+        logging.info(f"Model: {self.model}")
+        logging.info(f"Text preview: {text[:100]}...")
+        logging.debug(f"Full prompt sent to LLM:\n{formatted_prompt}")
+        
+        response = self.llm.invoke(formatted_prompt)  # Use first 1000 chars for efficiency
+        
+        logging.info(f"LLM response: {response.strip()}")
+        logging.info("=== END LLM IDENTITY DETECTION ===")
         
         if "chuck" in response.lower():
+            logging.debug("Identity detected as Chuck via LLM")
             return "Chuck"
         elif "colleen" in response.lower():
+            logging.debug("Identity detected as Colleen via LLM")
             return "Colleen"
         else:
+            logging.debug("Identity could not be determined, returning Unknown")
             return "Unknown"
     
     def _extract_date(self, text, filename, creation_date):
@@ -431,10 +471,20 @@ class LLMAnalyzer:
         )
         
         try:
-            response = self.llm.invoke(prompt.format(text=text[:2000], filename=filename))
+            formatted_prompt = prompt.format(text=text[:2000], filename=filename)
+            logging.info("=== LLM DOCUMENT ANALYSIS ===")
+            logging.info(f"Model: {self.model}")
+            logging.info(f"Analyzing: {filename}")
+            logging.info(f"Text preview: {text[:150]}...")
+            logging.debug(f"Full prompt sent to LLM:\n{formatted_prompt}")
+            
+            response = self.llm.invoke(formatted_prompt)
+            
+            logging.info(f"LLM response: {response.strip()}")
+            logging.info("=== END LLM DOCUMENT ANALYSIS ===")
             
             # Try to extract JSON from response
-            logging.debug(f"LLM response for document {filename}: {response}")
+            logging.debug(f"Extracting JSON from LLM response for {filename}")
             
             # Improved JSON extraction - find the first complete JSON object
             json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response)
@@ -445,6 +495,7 @@ class LLMAnalyzer:
             if json_match:
                 try:
                     result = json.loads(json_match.group(0))
+                    logging.debug(f"Successfully extracted JSON: {result}")
                     return {
                         "description": result.get("description", "Unknown Document"),
                         "category": result.get("category", "Uncategorized")

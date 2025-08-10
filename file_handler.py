@@ -7,8 +7,6 @@ import json
 import uuid
 import time
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-
 class FileHandler:
     def __init__(self, base_output_dir):
         """Initialize with the base output directory."""

@@ -18,6 +18,12 @@ def main():
         ]
     )
     
+    # Reduce noise from HTTP libraries
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    
     # Log startup
     logging.info("Starting Document Organizer application")
     

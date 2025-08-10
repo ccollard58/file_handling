@@ -210,7 +210,7 @@ class DocumentProcessor:
                 logging.error(f"Error performing OCR on PDF {file_path}: {str(e)}")
                 return ""
 
-    def _has_real_words(self, text, min_real_word_ratio=0.3, min_absolute_real_words=5, min_word_len=3):
+    def _has_real_words(self, text, min_real_word_ratio=0.5, min_absolute_real_words=15, min_word_len=3):
         """Check if the text contains a sufficient number of 'real' words using NLTK."""
         if not text or not isinstance(text, str) or not text.strip():
             logging.debug("Text is empty or not a string.")

@@ -127,6 +127,9 @@ class FileOrganizerGUI(QMainWindow):
         
         # Restore LLM settings from config
         self.restore_llm_settings()
+        
+        # Refresh the GUI controls with the restored settings
+        self.populate_settings()
     
     def load_config(self):
         """Load configuration from file."""
@@ -444,6 +447,8 @@ class FileOrganizerGUI(QMainWindow):
             # Use the static method to get text models (excludes vision models)
             available_models = self.llm_analyzer.get_text_models()
             if available_models:
+                # Sort models alphabetically
+                available_models.sort()
                 self.model_combo.addItems(available_models)
                 current_model = self.llm_analyzer.model
                 if current_model in available_models:
@@ -466,6 +471,8 @@ class FileOrganizerGUI(QMainWindow):
             # Use the static method to get vision models
             available_models = self.llm_analyzer.get_vision_models()
             if available_models:
+                # Sort models alphabetically
+                available_models.sort()
                 self.vision_model_combo.addItems(available_models)
                 current_model = self.llm_analyzer.vision_model
                 if current_model in available_models:

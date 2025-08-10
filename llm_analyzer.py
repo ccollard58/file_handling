@@ -69,7 +69,7 @@ class LLMAnalyzer:
             all_models = [model["name"] for model in models]
             
             # Filter out vision-capable models (common vision model patterns)
-            vision_keywords = ['gemma3', 'qwen2.5vl', 'mistral-small3.1', 'llava', 'vision', 'minicpm', 'moondream', 'bakllava', 'cogvlm']
+            vision_keywords = ['qwen2.5vl', 'mistral-small3', 'llava', 'vision', 'minicpm', 'moondream', 'bakllava', 'cogvlm']
             text_models = []
             
             for model in all_models:
@@ -94,7 +94,7 @@ class LLMAnalyzer:
             all_models = [model["name"] for model in models]
             
             # Filter for vision-capable models (common vision model patterns)
-            vision_keywords = ['gemma3', 'qwen2.5vl', 'mistral-small3.1', 'llava', 'vision', 'minicpm', 'moondream', 'bakllava', 'cogvlm']
+            vision_keywords = ['qwen2.5vl', 'mistral-small3', 'llava', 'vision', 'minicpm', 'moondream', 'bakllava', 'cogvlm']
             vision_models = []
             
             for model in all_models:
@@ -197,6 +197,8 @@ class LLMAnalyzer:
             - "Memories": Documents that capture a fond memory. Examples: Letters, Notes, Theater Ticket Stubs, Photographs
             - "Other": Documents that don't fit neatly into other categories, or are unclear in purpose. Examples: Chinese Text Document, Abstract colorful image, Franklin Institute Color Codes, Roadside Attraction Sign
 
+            Note: If the document is related to the catholic church, then it should fit the "Other" category and probably belongs to Colleen.
+
             Based on what you can see in this image, respond in JSON format:
              {
                  "identity": "your guess here (Chuck or Colleen or Unknown)",
@@ -210,32 +212,41 @@ class LLMAnalyzer:
             response = self.vision_llm.invoke(prompt, images=[str(file_path)])
             logging.debug(f"Vision LLM response for image {filename}: {response}")
         
-            # Try to extract JSON from response
-            json_match = re.search(r'{.*}', response, re.DOTALL)
+            # Improved JSON extraction - find the first complete JSON object
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response)
+            if not json_match:
+                # Try a more permissive pattern for nested JSON
+                json_match = re.search(r'\{.*?\}', response, re.DOTALL)
+            
             if json_match:
-                result = json.loads(json_match.group(0))
-                
-                # Extract date from filename or use creation date
-                date = self._extract_date("", filename, creation_date)
-                # If image has no visible text, treat as photo
-                visible = result.get("visible_text", "").strip()
-                if not visible:
-                    # Clean filename for description
-                    base = os.path.splitext(filename)[0]
-                    desc = base.replace('_', ' ').replace('-', ' ').title()
+                try:
+                    result = json.loads(json_match.group(0))
+                    
+                    # Extract date from filename or use creation date
+                    date = self._extract_date("", filename, creation_date)
+                    # If image has no visible text, treat as photo
+                    visible = result.get("visible_text", "").strip()
+                    if not visible:
+                        # Clean filename for description
+                        base = os.path.splitext(filename)[0]
+                        desc = base.replace('_', ' ').replace('-', ' ').title()
+                        return {
+                            "identity": "Unknown",
+                            "date": date,
+                            "description": desc,
+                            "category": "Photography"
+                        }
+                    # Otherwise use LLM result
                     return {
-                        "identity": "Unknown",
+                        "identity": result.get("identity", "Unknown"),
                         "date": date,
-                        "description": desc,
-                        "category": "Photography"
+                        "description": result.get("description", "Image Document"),
+                        "category": result.get("category", "Uncategorized")
                     }
-                # Otherwise use LLM result
-                return {
-                    "identity": result.get("identity", "Unknown"),
-                    "date": date,
-                    "description": result.get("description", "Image Document"),
-                    "category": result.get("category", "Uncategorized")
-                }
+                except json.JSONDecodeError as json_err:
+                    logging.warning(f"JSON decode error for vision analysis of {filename}: {json_err}")
+                    logging.debug(f"Problematic JSON string: {json_match.group(0)}")
+                    # Fall through to fallback
             else:
                 # Fallback if JSON parsing fails
                 logging.warning(f"Could not parse LLM response for image {filename}")
@@ -321,9 +332,9 @@ class LLMAnalyzer:
             input_variables=["text"],
             template="""
             Based on the following document text, determine if it most likely belongs to "Chuck Collard" 
-            (also known as "Charles Collard" or "Charles W Collard") or "Colleen McGinnis" 
-            (also known as "Colleen Collard").
-            
+            (also known as "Charles Collard" or "Charles W Collard") or "Colleen McGinnis" (also known as "Colleen Collard").
+            If the document is related to the catholic church, then it probably belongs to Colleen.
+
             Document text:
             {text}
             
@@ -407,7 +418,9 @@ class LLMAnalyzer:
             - "Hobbies": Documents related to personal hobbies and interests. Examples: DIY Guides, Craft Patterns, Art Supply Inventories, Media Releases, Copyright Registrations
             - "Memories": Documents that capture a fond memory. Examples: Letters, Notes, Theater Ticket Stubs, Photographs
             - "Other": Documents that don't fit neatly into other categories, or are unclear in purpose. Examples: Chinese Text Document, Abstract colorful image, Franklin Institute Color Codes, Roadside Attraction Sign
-            
+
+            Note: If the document is related to church, then it should fit the "Other" category and probably belongs to Colleen.
+
             Document filename: {filename}
             Document text (partial):
             {text}
@@ -422,22 +435,33 @@ class LLMAnalyzer:
             
             # Try to extract JSON from response
             logging.debug(f"LLM response for document {filename}: {response}")
-            json_match = re.search(r'{.*}', response, re.DOTALL)
+            
+            # Improved JSON extraction - find the first complete JSON object
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response)
+            if not json_match:
+                # Try a more permissive pattern for nested JSON
+                json_match = re.search(r'\{.*?\}', response, re.DOTALL)
+            
             if json_match:
-                result = json.loads(json_match.group(0))
-                return {
-                    "description": result.get("description", "Unknown Document"),
-                    "category": result.get("category", "Uncategorized")
-                }
-            else:
-                # Fallback parsing if JSON extraction fails
-                description_match = re.search(r'"description":\s*"([^"]+)"', response)
-                category_match = re.search(r'"category":\s*"([^"]+)"', response)
-                
-                return {
-                    "description": description_match.group(1) if description_match else "Unknown Document",
-                    "category": category_match.group(1) if category_match else "Uncategorized"
-                }
+                try:
+                    result = json.loads(json_match.group(0))
+                    return {
+                        "description": result.get("description", "Unknown Document"),
+                        "category": result.get("category", "Uncategorized")
+                    }
+                except json.JSONDecodeError as json_err:
+                    logging.warning(f"JSON decode error for {filename}: {json_err}")
+                    logging.debug(f"Problematic JSON string: {json_match.group(0)}")
+                    # Fall through to fallback parsing
+            
+            # Fallback parsing if JSON extraction fails
+            description_match = re.search(r'"description":\s*"([^"]+)"', response)
+            category_match = re.search(r'"category":\s*"([^"]+)"', response)
+            
+            return {
+                "description": description_match.group(1) if description_match else "Unknown Document",
+                "category": category_match.group(1) if category_match else "Uncategorized"
+            }
         except Exception as e:
             logging.error(f"Error in LLM analysis: {str(e)}")
             return {"description": "Unknown Document", "category": "Uncategorized"}

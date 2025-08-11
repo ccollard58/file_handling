@@ -1,5 +1,12 @@
 /.cursor
 /.venv
-/document_organizer.log
-/test_docs
+*.log
 /__pycache__
+evaluation_results/*
+temperature_optimization_results/*
+test_detailed_logging/*
+test_temp_optimization/*
+ocr_results/*
+test_docs/*
+dist/**/*
+build/**/*

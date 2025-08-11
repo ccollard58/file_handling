@@ -6,10 +6,38 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
-                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton)
-from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter
+                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton, QTabWidget)
+from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect, QObject, QDateTime
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter, QFont
 from PyQt6.QtPdf import QPdfDocument
+
+class QtLogHandler(logging.Handler, QObject):
+    """Custom logging handler that emits Qt signals for real-time log display"""
+    
+    log_message = pyqtSignal(str, str, str)  # level, time, message
+    
+    def __init__(self):
+        logging.Handler.__init__(self)
+        QObject.__init__(self)
+        
+    def emit(self, record):
+        """Emit the log record as a Qt signal"""
+        try:
+            # Format the message
+            level = record.levelname
+            time_str = self.format_time(record)
+            message = record.getMessage()
+            
+            # Emit the signal
+            self.log_message.emit(level, time_str, message)
+        except Exception:
+            # Ignore errors in logging to prevent infinite loops
+            pass
+    
+    def format_time(self, record):
+        """Format the timestamp for display"""
+        import time
+        return time.strftime('%H:%M:%S', time.localtime(record.created))
 
 class CheckBoxDelegate(QStyledItemDelegate):
     """Custom delegate to center checkboxes in the first column"""
@@ -119,6 +147,9 @@ class FileOrganizerGUI(QMainWindow):
         # Set default source folder from config
         default_source = self.config.get("source_folder", r"E:\Documents")
         
+        # Set up logging handler for real-time display
+        self.setup_logging()
+        
         self.init_ui()
         self.output_folder_edit.setText(self.file_handler.base_output_dir)  # Show configured folder
         
@@ -130,6 +161,26 @@ class FileOrganizerGUI(QMainWindow):
         
         # Refresh the GUI controls with the restored settings
         self.populate_settings()
+    
+    def setup_logging(self):
+        """Set up the Qt logging handler for real-time log display"""
+        self.qt_log_handler = QtLogHandler()
+        self.qt_log_handler.log_message.connect(self.add_log_message)
+        
+        # Add the handler to the root logger
+        root_logger = logging.getLogger()
+        root_logger.addHandler(self.qt_log_handler)
+        
+        # Set the level for our handler from config or default to INFO
+        log_level_str = self.config.get("log_level", "INFO")
+        level_map = {
+            "DEBUG": logging.DEBUG,
+            "INFO": logging.INFO,
+            "WARNING": logging.WARNING,
+            "ERROR": logging.ERROR,
+            "CRITICAL": logging.CRITICAL
+        }
+        self.qt_log_handler.setLevel(level_map.get(log_level_str, logging.INFO))
     
     def load_config(self):
         """Load configuration from file."""
@@ -149,9 +200,17 @@ class FileOrganizerGUI(QMainWindow):
     def save_config(self):
         """Save current configuration to file."""
         try:
+            # Get current log level from logging tab if available
+            current_log_level = "INFO"  # default
+            if hasattr(self, 'log_level_combo'):
+                current_log_level = self.log_level_combo.currentText()
+            elif "log_level" in self.config:
+                current_log_level = self.config["log_level"]
+            
             config = {
                 "output_folder": self.file_handler.base_output_dir,
                 "source_folder": self.current_folder,
+                "log_level": current_log_level,
                 "llm_settings": {
                     "model": self.llm_analyzer.model,
                     "vision_model": self.llm_analyzer.vision_model,
@@ -180,13 +239,29 @@ class FileOrganizerGUI(QMainWindow):
             logging.error(f"Error restoring LLM settings: {e}")
     
     def init_ui(self):
-        """Initialize the simplified user interface"""
+        """Initialize the tabbed user interface"""
         self.setWindowTitle("Document Organizer - Simplified")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1400, 900)
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        
+        # Create tab widget
+        self.tab_widget = QTabWidget()
+        main_layout.addWidget(self.tab_widget)
+        
+        # Create tabs
+        self.create_main_tab()
+        self.create_settings_tab()
+        self.create_logging_tab()
+        
+    def create_main_tab(self):
+        """Create the main document processing tab"""
+        main_tab = QWidget()
+        self.tab_widget.addTab(main_tab, "Document Processing")
+        
+        main_layout = QVBoxLayout(main_tab)
         
         # Step 1: Output Folder Selection (Compact)
         output_widget = QWidget()
@@ -203,9 +278,6 @@ class FileOrganizerGUI(QMainWindow):
         output_layout.addWidget(self.browse_output_btn)
         
         main_layout.addWidget(output_widget)
-        
-        # Add expandable settings section
-        self.create_settings_group(main_layout)
         
         # Create splitter for two-panel layout
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -230,7 +302,8 @@ class FileOrganizerGUI(QMainWindow):
         self.folder_status_label = QLabel("No folder selected")
         self.folder_status_label.setStyleSheet("QLabel { color: #666; font-style: italic; }")
         folder_layout.addWidget(self.folder_status_label)
-          # File tree view
+        
+        # File tree view
         self.file_tree = QTreeView()
         self.file_system_model = QFileSystemModel()
         self.file_tree.setModel(self.file_system_model)
@@ -334,7 +407,8 @@ class FileOrganizerGUI(QMainWindow):
         # Set splitter proportions
         splitter.setSizes([400, 800])
         main_layout.addWidget(splitter)
-          # Configure file view headers
+        
+        # Configure file view headers
         header = self.file_view.header()
         if header is not None:
             # Fix the checkbox column (0) width and prevent resizing
@@ -346,7 +420,9 @@ class FileOrganizerGUI(QMainWindow):
             header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
-            header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)        # Connect selection change to preview update (only if selectionModel exists)
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+        
+        # Connect selection change to preview update (only if selectionModel exists)
         selection_model = self.file_view.selectionModel()
         if selection_model is not None:
             selection_model.selectionChanged.connect(self.update_preview)
@@ -358,55 +434,59 @@ class FileOrganizerGUI(QMainWindow):
                     selection_model.selectionChanged.connect(self.update_preview)
             QTimer.singleShot(0, connect_when_ready)
     
-    def create_settings_group(self, parent_layout):
-        """Creates a collapsible settings section."""
-        # Toggle button for expanding/collapsing settings
-        self.settings_toggle = QToolButton()
-        self.settings_toggle.setText("Settings...")
-        self.settings_toggle.setCheckable(True)
-        self.settings_toggle.setChecked(False)
-        self.settings_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.settings_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self.settings_toggle.toggled.connect(self.on_settings_toggled)
-        parent_layout.addWidget(self.settings_toggle)
-
-        # Container for actual settings widgets
-        self.settings_container = QWidget()
-        self.settings_container.setVisible(False)
-        settings_layout = QGridLayout(self.settings_container)
+    def create_settings_tab(self):
+        """Create the settings configuration tab"""
+        settings_tab = QWidget()
+        self.tab_widget.addTab(settings_tab, "Settings")
+        
+        settings_layout = QVBoxLayout(settings_tab)
+        settings_layout.setContentsMargins(20, 20, 20, 20)
+        settings_layout.setSpacing(20)
+        
+        # LLM Settings Group
+        llm_group = QGroupBox("LLM Configuration")
+        llm_layout = QGridLayout(llm_group)
         
         # Model selection
-        settings_layout.addWidget(QLabel("Text Model:"), 0, 0)
+        llm_layout.addWidget(QLabel("Text Model:"), 0, 0)
         self.model_combo = QComboBox()
-        settings_layout.addWidget(self.model_combo, 0, 1)
+        llm_layout.addWidget(self.model_combo, 0, 1)
         
         # Refresh models button
         self.refresh_models_btn = QPushButton("Refresh")
         self.refresh_models_btn.clicked.connect(self.populate_models)
-        settings_layout.addWidget(self.refresh_models_btn, 0, 2)
+        llm_layout.addWidget(self.refresh_models_btn, 0, 2)
         
         # Vision model selection
-        settings_layout.addWidget(QLabel("Vision Model:"), 1, 0)
+        llm_layout.addWidget(QLabel("Vision Model:"), 1, 0)
         self.vision_model_combo = QComboBox()
-        settings_layout.addWidget(self.vision_model_combo, 1, 1)
+        llm_layout.addWidget(self.vision_model_combo, 1, 1)
         
         # Refresh vision models button
         self.refresh_vision_models_btn = QPushButton("Refresh")
         self.refresh_vision_models_btn.clicked.connect(self.populate_vision_models)
-        settings_layout.addWidget(self.refresh_vision_models_btn, 1, 2)
+        llm_layout.addWidget(self.refresh_vision_models_btn, 1, 2)
         
         # Temperature setting
-        settings_layout.addWidget(QLabel("Temperature:"), 2, 0)
+        llm_layout.addWidget(QLabel("Temperature:"), 2, 0)
         self.temp_edit = QLineEdit()
         self.temp_edit.setPlaceholderText("e.g., 0.6")
-        settings_layout.addWidget(self.temp_edit, 2, 1)
+        llm_layout.addWidget(self.temp_edit, 2, 1)
+        
+        settings_layout.addWidget(llm_group)
         
         # Apply button
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
         self.apply_settings_btn = QPushButton("Apply Settings")
         self.apply_settings_btn.clicked.connect(self.apply_settings)
-        settings_layout.addWidget(self.apply_settings_btn, 3, 0)
+        self.apply_settings_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 16px; }")
+        button_layout.addWidget(self.apply_settings_btn)
+        button_layout.addStretch()
         
-        parent_layout.addWidget(self.settings_container)
+        settings_layout.addLayout(button_layout)
+        settings_layout.addStretch()
+        
         # Populate initial values
         self.populate_settings()
         
@@ -415,13 +495,169 @@ class FileOrganizerGUI(QMainWindow):
         self.vision_model_combo.currentTextChanged.connect(self.on_settings_changed)
         self.temp_edit.textChanged.connect(self.on_settings_changed)
     
-    def on_settings_toggled(self, checked):
-        """Expand or collapse the settings container."""
-        # Update arrow direction
-        arrow = Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
-        self.settings_toggle.setArrowType(arrow)
-        # Show or hide settings
-        self.settings_container.setVisible(checked)
+    def create_logging_tab(self):
+        """Create the real-time logging tab"""
+        logging_tab = QWidget()
+        self.tab_widget.addTab(logging_tab, "Logging")
+        
+        logging_layout = QVBoxLayout(logging_tab)
+        
+        # Add header with controls
+        header_layout = QHBoxLayout()
+        
+        # Log level filter
+        header_layout.addWidget(QLabel("Log Level:"))
+        self.log_level_combo = QComboBox()
+        self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+        
+        # Set initial log level from config
+        initial_log_level = self.config.get("log_level", "INFO")
+        self.log_level_combo.setCurrentText(initial_log_level)
+        self.log_level_combo.currentTextChanged.connect(self.filter_log_messages)
+        header_layout.addWidget(self.log_level_combo)
+        
+        header_layout.addStretch()
+        
+        # Clear logs button
+        self.clear_logs_btn = QPushButton("Clear Logs")
+        self.clear_logs_btn.clicked.connect(self.clear_logs)
+        header_layout.addWidget(self.clear_logs_btn)
+        
+        # Save logs button
+        self.save_logs_btn = QPushButton("Save Logs...")
+        self.save_logs_btn.clicked.connect(self.save_logs)
+        header_layout.addWidget(self.save_logs_btn)
+        
+        logging_layout.addLayout(header_layout)
+        
+        # Create the log display area
+        self.log_display = QTextEdit()
+        self.log_display.setReadOnly(True)
+        self.log_display.setMinimumHeight(400)
+        
+        # Set font to monospace for better alignment
+        font = QFont("Consolas", 9)
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        self.log_display.setFont(font)
+        
+        # Set a dark theme for the log display
+        self.log_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                border: 1px solid #3e3e3e;
+            }
+        """)
+        
+        logging_layout.addWidget(self.log_display)
+        
+        # Initialize log storage for filtering
+        self.log_messages = []
+        self.current_log_level = self.config.get("log_level", "INFO")
+        
+        # Add initial message
+        self.add_log_message("INFO", "00:00:00", "Logging tab initialized. Real-time logs will appear here.")
+    
+    def add_log_message(self, level, time_str, message):
+        """Add a log message to the display"""
+        # Store the log message
+        log_entry = {
+            'level': level,
+            'time': time_str,
+            'message': message
+        }
+        self.log_messages.append(log_entry)
+        
+        # Keep only the last 1000 messages to prevent memory issues
+        if len(self.log_messages) > 1000:
+            self.log_messages = self.log_messages[-1000:]
+        
+        # Check if this message should be displayed based on current filter
+        if self.should_display_log(level):
+            self.append_log_to_display(level, time_str, message)
+    
+    def should_display_log(self, level):
+        """Check if a log message should be displayed based on current filter"""
+        level_hierarchy = {
+            "DEBUG": 0,
+            "INFO": 1,
+            "WARNING": 2,
+            "ERROR": 3,
+            "CRITICAL": 4
+        }
+        
+        current_level_num = level_hierarchy.get(self.current_log_level, 1)
+        message_level_num = level_hierarchy.get(level, 1)
+        
+        return message_level_num >= current_level_num
+    
+    def append_log_to_display(self, level, time_str, message):
+        """Append a formatted log message to the display"""
+        # Color code by level
+        color_map = {
+            "DEBUG": "#888888",
+            "INFO": "#ffffff",
+            "WARNING": "#ffaa00",
+            "ERROR": "#ff6666",
+            "CRITICAL": "#ff0000"
+        }
+        
+        color = color_map.get(level, "#ffffff")
+        
+        # Format the log entry
+        formatted_message = f'<span style="color: {color};">[{time_str}] {level:8} | {message}</span>'
+        
+        # Add to display
+        self.log_display.append(formatted_message)
+        
+        # Auto-scroll to bottom
+        cursor = self.log_display.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.log_display.setTextCursor(cursor)
+    
+    def filter_log_messages(self, level):
+        """Filter log messages by level"""
+        self.current_log_level = level
+        
+        # Clear display and re-add filtered messages
+        self.log_display.clear()
+        
+        for log_entry in self.log_messages:
+            if self.should_display_log(log_entry['level']):
+                self.append_log_to_display(
+                    log_entry['level'],
+                    log_entry['time'],
+                    log_entry['message']
+                )
+    
+    def clear_logs(self):
+        """Clear all log messages"""
+        self.log_messages.clear()
+        self.log_display.clear()
+        self.add_log_message("INFO", "00:00:00", "Logs cleared.")
+    
+    def save_logs(self):
+        """Save current log messages to a file"""
+        try:
+            filename, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Logs",
+                f"document_organizer_logs_{QDateTime.currentDateTime().toString('yyyyMMdd_hhmmss')}.txt",
+                "Text Files (*.txt);;All Files (*)"
+            )
+            
+            if filename:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write("Document Organizer - Application Logs\n")
+                    f.write("=" * 50 + "\n\n")
+                    
+                    for log_entry in self.log_messages:
+                        f.write(f"[{log_entry['time']}] {log_entry['level']:8} | {log_entry['message']}\n")
+                
+                QMessageBox.information(self, "Logs Saved", f"Logs saved to: {filename}")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save logs: {str(e)}")
     
     def on_settings_changed(self):
         """Called when any setting is changed to indicate changes need to be applied."""
@@ -438,6 +674,7 @@ class FileOrganizerGUI(QMainWindow):
         self.populate_models()
         self.populate_vision_models()
         self.temp_edit.setText(str(self.llm_analyzer.temperature))
+        
         self.reset_apply_button()  # Reset button when populating with current values
 
     def populate_models(self):
@@ -503,14 +740,47 @@ class FileOrganizerGUI(QMainWindow):
             return
             
         try:
+            # Update LLM settings
             self.llm_analyzer.update_settings(model, temperature, vision_model)
+            
             self.reset_apply_button()  # Reset button appearance after successful apply
-            QMessageBox.information(self, "Settings Updated", f"LLM settings updated successfully.\nText Model: {model}\nVision Model: {vision_model}\nTemperature: {temperature}")
+            QMessageBox.information(self, "Settings Updated", 
+                f"Settings updated successfully.\n"
+                f"Text Model: {model}\n"
+                f"Vision Model: {vision_model}\n"
+                f"Temperature: {temperature}")
         except Exception as e:
-            QMessageBox.critical(self, "Error Updating Settings", f"Failed to update LLM settings: {e}")
+            QMessageBox.critical(self, "Error Updating Settings", f"Failed to update settings: {e}")
             
         # Save configuration after applying settings
         self.save_config()
+    
+    def apply_log_level_setting(self, log_level):
+        """Apply the log level setting to both the GUI and logging system."""
+        try:
+            # Update the logging tab filter
+            if hasattr(self, 'log_level_combo'):
+                self.log_level_combo.setCurrentText(log_level)
+                self.filter_log_messages(log_level)
+            
+            # Update the Qt log handler level
+            if hasattr(self, 'qt_log_handler'):
+                level_map = {
+                    "DEBUG": logging.DEBUG,
+                    "INFO": logging.INFO,
+                    "WARNING": logging.WARNING,
+                    "ERROR": logging.ERROR,
+                    "CRITICAL": logging.CRITICAL
+                }
+                self.qt_log_handler.setLevel(level_map.get(log_level, logging.INFO))
+            
+            # Store the log level in config for persistence
+            self.config["log_level"] = log_level
+            
+            logging.info(f"Log level updated to: {log_level}")
+            
+        except Exception as e:
+            logging.error(f"Error applying log level setting: {e}")
 
     def browse_source_folder(self):
         """Browse for source folder and populate file tree"""
@@ -1029,6 +1299,11 @@ class FileOrganizerGUI(QMainWindow):
 
     def closeEvent(self, event):
         """Save configuration when the application is closing."""
+        # Remove our logging handler to prevent issues
+        if hasattr(self, 'qt_log_handler'):
+            root_logger = logging.getLogger()
+            root_logger.removeHandler(self.qt_log_handler)
+        
         self.save_config()
         event.accept()
 

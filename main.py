@@ -6,16 +6,35 @@ from llm_analyzer import LLMAnalyzer
 from file_handler import FileHandler
 from gui_simplified import FileOrganizerGUI
 import logging
+from logging.handlers import RotatingFileHandler
+import os
 
 def main():
-    # Set up logging
+    # Set up logging with rotating file handler
+    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    
+    # Create logs directory if it doesn't exist
+    logs_dir = "logs"
+    if not os.path.exists(logs_dir):
+        os.makedirs(logs_dir)
+    
+    # Set up rotating file handler (10MB max, keep 5 backup files)
+    log_file = os.path.join(logs_dir, "document_organizer.log")
+    file_handler = RotatingFileHandler(
+        log_file, 
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5
+    )
+    file_handler.setFormatter(log_formatter)
+    
+    # Set up console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_formatter)
+    
+    # Configure root logger
     logging.basicConfig(
         level=logging.DEBUG,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler("document_organizer.log"),
-            logging.StreamHandler()
-        ]
+        handlers=[file_handler, console_handler]
     )
     
     # Reduce noise from HTTP libraries
@@ -26,6 +45,7 @@ def main():
     
     # Log startup
     logging.info("Starting Document Organizer application")
+    logging.info(f"Logging to file: {os.path.abspath(log_file)}")
     
     # Initialize application
     app = QApplication(sys.argv)

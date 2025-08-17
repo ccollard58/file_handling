@@ -66,8 +66,22 @@ class LLMAnalyzer:
             models = response.json().get("models", [])
             all_models = [model["name"] for model in models]
             
-            # Filter out vision-capable models (common vision model patterns)
-            vision_keywords = ['qwen2.5vl', 'mistral-small3', 'llava', 'vision', 'minicpm', 'moondream', 'bakllava', 'cogvlm']
+            # Filter out vision-capable models using updated list from Ollama
+            vision_keywords = [
+                'llava',           # LLaVA models (llava, llava-llama3, llava-phi3)
+                'vision',          # Models with 'vision' in name (llama3.2-vision, granite3.2-vision)
+                'minicpm-v',       # MiniCPM vision models
+                'qwen2.5vl',       # Qwen vision-language models
+                'moondream',       # Moondream vision models
+                'bakllava',        # BakLLaVA models
+                'mistral-small3',  # Mistral Small 3.1/3.2 with vision
+                'granite3.2-vision', # Granite vision models
+                'cogvlm',          # CogVLM models
+                'pixtral',         # Pixtral models
+                'gemma3',          # Gemma3 has vision capabilities
+                'llama4',          # Llama4 multimodal models
+                'qwq'              # QwQ models
+            ]
             text_models = []
             
             for model in all_models:
@@ -91,8 +105,23 @@ class LLMAnalyzer:
             models = response.json().get("models", [])
             all_models = [model["name"] for model in models]
             
-            # Filter for vision-capable models (common vision model patterns)
-            vision_keywords = ['qwen2.5vl', 'mistral-small3', 'llava', 'vision', 'minicpm', 'moondream', 'bakllava', 'cogvlm']
+            # Filter for vision-capable models based on Ollama's vision models
+            # Updated list from https://ollama.com/search?c=vision
+            vision_keywords = [
+                'llava',           # LLaVA models (llava, llava-llama3, llava-phi3)
+                'vision',          # Models with 'vision' in name (llama3.2-vision, granite3.2-vision)
+                'minicpm-v',       # MiniCPM vision models
+                'qwen2.5vl',       # Qwen vision-language models
+                'moondream',       # Moondream vision models
+                'bakllava',        # BakLLaVA models
+                'mistral-small3',  # Mistral Small 3.1/3.2 with vision
+                'granite3.2-vision', # Granite vision models
+                'cogvlm',          # CogVLM models
+                'pixtral',         # Pixtral models
+                'gemma3',          # Gemma3 has vision capabilities
+                'llama4',          # Llama4 multimodal models
+                'qwq'              # QwQ models
+            ]
             vision_models = []
             
             for model in all_models:
@@ -457,7 +486,7 @@ class LLMAnalyzer:
             - "Employment": Documents related to employment history, benefits, and income. Examples: Pay Stubs, Employment Contracts, Benefits Forms, Performance Reviews
             - "Hobbies": Documents related to personal hobbies and interests. Examples: DIY Guides, Craft Patterns, Art Supply Inventories, Media Releases, Copyright Registrations
             - "Memories": Documents that capture a fond memory. Examples: Letters, Notes, Theater Ticket Stubs, Photographs
-            - "Other": Documents that don't fit neatly into other categories, or are unclear in purpose. Examples: Chinese Text Document, Abstract colorful image, Franklin Institute Color Codes, Roadside Attraction Sign
+            - "Other": Documents that don't fit neatly into other categories, or are unclear in purpose. Examples: Chinese Text Document, Abstract colorful image, Franklin Institute Color Codes, Roadside Attraction Sign.
 
             Note: If the document is related to church, then it should fit the "Other" category and probably belongs to Colleen.
 

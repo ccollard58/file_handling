@@ -220,12 +220,22 @@ class VisionModelEvaluator:
             models = response.json().get("models", [])
             all_models = [model["name"] for model in models]
             
-            # Filter for vision-capable models
+            # Filter for vision-capable models based on Ollama's vision models
+            # Updated list from https://ollama.com/search?c=vision
             vision_keywords = [
-                'llava', 'vision', 'multimodal', 'minicpm', 'moondream', 
-                'bakllava', 'cogvlm', 'vl', 'qwen2.5-vl', 'pixtral',
-                'qwq', 'mistral-small',
-                'gemma3', 'llama4'
+                'llava',           # LLaVA models (llava, llava-llama3, llava-phi3)
+                'vision',          # Models with 'vision' in name (llama3.2-vision, granite3.2-vision)
+                'minicpm-v',       # MiniCPM vision models
+                'qwen2.5vl',       # Qwen vision-language models
+                'moondream',       # Moondream vision models
+                'bakllava',        # BakLLaVA models
+                'mistral-small3',  # Mistral Small 3.1/3.2 with vision
+                'granite3.2-vision', # Granite vision models
+                'cogvlm',          # CogVLM models
+                'pixtral',         # Pixtral models
+                'gemma3',          # Gemma3 has vision capabilities
+                'llama4',          # Llama4 multimodal models
+                'qwq'              # QwQ models
             ]
             
             vision_models = []

@@ -929,7 +929,8 @@ class FileOrganizerGUI(QMainWindow):
                     'identity': analysis_result['identity'],
                     'date': analysis_result['date'],
                     'description': analysis_result['description'],
-                    'category': analysis_result['category']
+                    'category': analysis_result['category'],
+                    'extracted_text': extracted_text  # Store the extracted text for preview
                 }
                 self.analyzed_files.append(analysis_data)
                 
@@ -958,6 +959,13 @@ class FileOrganizerGUI(QMainWindow):
 
         # Update preview if available
         self.update_preview()
+    
+    def get_extracted_text_for_file(self, file_path):
+        """Get the stored extracted text for a file from analysis data"""
+        for analysis_data in self.analyzed_files:
+            if analysis_data['original_path'] == file_path:
+                return analysis_data.get('extracted_text', None)
+        return None
     
     def update_preview(self):
         """Update the preview panel with the selected file content"""
@@ -990,6 +998,9 @@ class FileOrganizerGUI(QMainWindow):
             self.preview_image_label.setVisible(False)
             return
         
+        # Try to get extracted text from analysis data first
+        extracted_text = self.get_extracted_text_for_file(file_path)
+        
         file_ext = os.path.splitext(file_path)[1].lower()
         
         # Handle image files
@@ -1013,8 +1024,9 @@ class FileOrganizerGUI(QMainWindow):
                     image = QImage(file_path)
                     dimensions = f"{image.width()}x{image.height()}"
                     
-                    # Extract text (OCR) for images
-                    extracted_text = self.document_processor.extract_text(file_path)
+                    # Use stored extracted text if available, otherwise extract (fallback)
+                    if extracted_text is None:
+                        extracted_text = self.document_processor.extract_text(file_path)
                     
                     preview_text = (
                         f"Image Preview: {os.path.basename(file_path)}\n"
@@ -1051,8 +1063,9 @@ class FileOrganizerGUI(QMainWindow):
             except Exception:
                 self.preview_image_label.setVisible(False)
              
-            # Extract text from PDF
-            extracted_text = self.document_processor.extract_text(file_path)
+            # Use stored extracted text if available, otherwise extract (fallback)
+            if extracted_text is None:
+                extracted_text = self.document_processor.extract_text(file_path)
             
             file_size = os.path.getsize(file_path) / 1024  # KB
             preview_text = (
@@ -1077,8 +1090,10 @@ class FileOrganizerGUI(QMainWindow):
             except Exception:
                 self.preview_image_label.setVisible(False)
             try:
-                # Extract text from document
-                extracted_text = self.document_processor.extract_text(file_path)
+                # Use stored extracted text if available, otherwise extract (fallback)
+                if extracted_text is None:
+                    extracted_text = self.document_processor.extract_text(file_path)
+                    
                 file_size = os.path.getsize(file_path) / 1024  # KB
                 preview_text = (
                     f"DOC Preview: {os.path.basename(file_path)}\n"

@@ -15,17 +15,18 @@
   },
   "vision_model_keywords": [
     "llava",
-    "vision", 
-    "multimodal",
-    "minicpm",
+    "vision",
+    "minicpm-v",
+    "qwen2.5vl",
     "moondream",
     "bakllava",
+    "mistral-small3",
+    "granite3.2-vision",
     "cogvlm",
-    "qwen2-vl",
-    "qwen2.5-vl",
     "pixtral",
-    "gemma2-vl",
-    "phi3.5-vision",
+    "gemma3",
+    "llama4",
+    "qwq",
     "llama3.2-vision"
   ],
   "text_cleaning": {
@@ -53,9 +54,9 @@
       "install_command": "ollama pull llava:latest"
     },
     {
-      "name": "qwen2.5-vl:latest", 
+      "name": "qwen2.5vl:latest", 
       "description": "High-performance vision-language model, excellent for text extraction",
-      "install_command": "ollama pull qwen2.5-vl:latest"
+      "install_command": "ollama pull qwen2.5vl:latest"
     },
     {
       "name": "moondream:latest",
@@ -63,9 +64,14 @@
       "install_command": "ollama pull moondream:latest"
     },
     {
-      "name": "phi3.5-vision:latest",
-      "description": "Microsoft's vision model, good for document understanding",
-      "install_command": "ollama pull phi3.5-vision:latest"
+      "name": "gemma3:latest",
+      "description": "Google's vision-capable model with strong document understanding",
+      "install_command": "ollama pull gemma3:latest"
+    },
+    {
+      "name": "llama3.2-vision:latest",
+      "description": "Meta's vision model for image reasoning and text extraction",
+      "install_command": "ollama pull llama3.2-vision:latest"
     }
   ],
   "troubleshooting": {

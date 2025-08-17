@@ -263,7 +263,23 @@ class FileOrganizerGUI(QMainWindow):
         
         main_layout = QVBoxLayout(main_tab)
         
-        # Step 1: Output Folder Selection (Compact)
+        # Step 1: Source Folder Selection
+        source_widget = QWidget()
+        source_widget.setMaximumHeight(35)
+        source_layout = QHBoxLayout(source_widget)
+        source_layout.setContentsMargins(5, 5, 5, 5)
+        
+        source_layout.addWidget(QLabel("Source Folder:"))
+        self.source_folder_edit = QLineEdit()
+        source_layout.addWidget(self.source_folder_edit)
+        
+        self.browse_source_btn = QPushButton("Browse...")
+        self.browse_source_btn.clicked.connect(self.browse_source_folder)
+        source_layout.addWidget(self.browse_source_btn)
+        
+        main_layout.addWidget(source_widget)
+        
+        # Step 2: Output Folder Selection (Compact)
         output_widget = QWidget()
         output_widget.setMaximumHeight(35)  # Limit height
         output_layout = QHBoxLayout(output_widget)
@@ -285,23 +301,6 @@ class FileOrganizerGUI(QMainWindow):
         # Step 2: Folder Structure Panel (Simplified)
         folder_panel = QWidget()
         folder_layout = QVBoxLayout(folder_panel)
-        
-        # Header with browse button
-        folder_header = QHBoxLayout()
-        folder_header.addWidget(QLabel("Select Source Folder and Files"))
-        folder_header.addStretch()
-        
-        self.browse_folder_btn = QPushButton("Browse Folder...")
-        self.browse_folder_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
-        self.browse_folder_btn.clicked.connect(self.browse_source_folder)
-        folder_header.addWidget(self.browse_folder_btn)
-        
-        folder_layout.addLayout(folder_header)
-        
-        # Current folder status
-        self.folder_status_label = QLabel("No folder selected")
-        self.folder_status_label.setStyleSheet("QLabel { color: #666; font-style: italic; }")
-        folder_layout.addWidget(self.folder_status_label)
         
         # File tree view
         self.file_tree = QTreeView()
@@ -787,8 +786,7 @@ class FileOrganizerGUI(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select Source Folder")
         if folder:
             self.current_folder = folder
-            self.folder_status_label.setText(f"Selected: {folder}")
-            self.folder_status_label.setStyleSheet("QLabel { color: #4CAF50; font-weight: bold; }")
+            self.source_folder_edit.setText(folder)
             
             # Set up file system model
             self.file_system_model.setRootPath(folder)
@@ -1311,8 +1309,7 @@ class FileOrganizerGUI(QMainWindow):
         """Set the default source folder and initialize the file browser"""
         if folder_path and os.path.exists(folder_path):
             self.current_folder = folder_path
-            self.folder_status_label.setText(f"Default: {folder_path}")
-            self.folder_status_label.setStyleSheet("QLabel { color: #2196F3; font-weight: bold; }")
+            self.source_folder_edit.setText(folder_path)
             
             # Set up file system model
             self.file_system_model.setRootPath(folder_path)

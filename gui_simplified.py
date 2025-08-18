@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
-                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton, QTabWidget)
+                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton, QTabWidget, QProgressBar)
 from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect, QObject, QDateTime
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter, QFont
 from PyQt6.QtPdf import QPdfDocument
@@ -124,6 +124,78 @@ class FileFinderThread(QThread):
     def stop(self):
         self.abort = True
 
+class FileAnalysisThread(QThread):
+    """Thread to analyze files in background without freezing the UI"""
+    file_analyzed = pyqtSignal(dict)  # Emits analysis data for each file
+    progress_updated = pyqtSignal(int, str)  # Progress value and current file
+    analysis_finished = pyqtSignal()
+    analysis_error = pyqtSignal(str, str)  # file_path, error_message
+    
+    def __init__(self, file_list, document_processor, llm_analyzer, file_handler):
+        super().__init__()
+        self.file_list = file_list
+        self.document_processor = document_processor
+        self.llm_analyzer = llm_analyzer
+        self.file_handler = file_handler
+        self.abort = False
+    
+    def run(self):
+        for i, file_path in enumerate(self.file_list):
+            if self.abort:
+                break
+            
+            # Update progress
+            self.progress_updated.emit(i, os.path.basename(file_path))
+            
+            try:
+                # Extract text from document
+                extracted_text = self.document_processor.extract_text(file_path)
+                
+                # Get file creation date
+                creation_date = self.file_handler.get_file_creation_date(file_path)
+                
+                # Analyze document with LLM
+                analysis_result = self.llm_analyzer.analyze_document(
+                    extracted_text, 
+                    os.path.basename(file_path),
+                    creation_date,
+                    file_path  # Pass the full file path for image analysis
+                )
+                
+                # Generate new filename
+                new_filename = self.file_handler.generate_new_filename(
+                    analysis_result, 
+                    os.path.basename(file_path)
+                )
+                
+                # Get destination path
+                destination_path = self.file_handler.get_destination_path(analysis_result)
+                
+                # Store analysis result
+                analysis_data = {
+                    'original_path': file_path,
+                    'new_filename': new_filename,
+                    'destination_folder': os.path.relpath(destination_path, self.file_handler.base_output_dir),
+                    'identity': analysis_result['identity'],
+                    'date': analysis_result['date'],
+                    'description': analysis_result['description'],
+                    'category': analysis_result['category'],
+                    'extracted_text': extracted_text  # Store the extracted text for preview
+                }
+                
+                # Emit the analysis result
+                self.file_analyzed.emit(analysis_data)
+                
+            except Exception as e:
+                self.analysis_error.emit(file_path, str(e))
+                continue
+        
+        # Signal completion
+        self.analysis_finished.emit()
+    
+    def stop(self):
+        self.abort = True
+
 class FileOrganizerGUI(QMainWindow):
     def __init__(self, document_processor, llm_analyzer, file_handler):
         super().__init__()
@@ -132,6 +204,7 @@ class FileOrganizerGUI(QMainWindow):
         self.file_handler = file_handler
         self.analyzed_files = []  # Will store analysis results
         self.current_folder = None  # Current selected folder
+        self.analysis_thread = None  # Background analysis thread
         
         # Configuration file path
         self.config_file = os.path.join(os.path.expanduser("~"), ".document_organizer_config.json")
@@ -350,6 +423,25 @@ class FileOrganizerGUI(QMainWindow):
         self.file_view.customContextMenuRequested.connect(self.show_context_menu)
         
         results_layout.addWidget(self.file_view)
+        
+        # Add progress bar for non-modal analysis progress
+        progress_widget = QWidget()
+        progress_layout = QHBoxLayout(progress_widget)
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
+        progress_layout.addWidget(self.progress_bar)
+        
+        self.cancel_analysis_btn = QPushButton("Cancel")
+        self.cancel_analysis_btn.setVisible(False)
+        self.cancel_analysis_btn.clicked.connect(self.cancel_analysis)
+        progress_layout.addWidget(self.cancel_analysis_btn)
+        
+        progress_widget.setVisible(False)
+        self.progress_widget = progress_widget  # Store reference to show/hide entire progress area
+        results_layout.addWidget(progress_widget)
         
         # Process controls
         process_layout = QHBoxLayout()
@@ -875,8 +967,13 @@ class FileOrganizerGUI(QMainWindow):
         self.analyze_files(all_files)
     
     def analyze_files(self, file_list):
-        """Analyze a list of files and populate results"""
+        """Analyze a list of files and populate results using background thread"""
         if not file_list:
+            return
+        
+        # If an analysis is already running, don't start another
+        if self.analysis_thread and self.analysis_thread.isRunning():
+            QMessageBox.warning(self, "Analysis in Progress", "An analysis is already running. Please wait for it to complete.")
             return
         
         # Clear previous results
@@ -887,63 +984,61 @@ class FileOrganizerGUI(QMainWindow):
         ])
         self.analyzed_files = []
         
-        # Create progress dialog
-        progress = QProgressDialog("Analyzing files...", "Cancel", 0, len(file_list), self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.show()
+        # Show progress bar and cancel button
+        self.progress_widget.setVisible(True)
+        self.progress_bar.setVisible(True)
+        self.cancel_analysis_btn.setVisible(True)
+        self.progress_bar.setMaximum(len(file_list))
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("Analyzing files... (0/{})".format(len(file_list)))
         
-        for i, file_path in enumerate(file_list):
-            if progress.wasCanceled():
-                break
-            
-            progress.setValue(i)
-            progress.setLabelText(f"Analyzing: {os.path.basename(file_path)}")
-            QApplication.processEvents()
-            
-            try:
-                # Extract text from document
-                extracted_text = self.document_processor.extract_text(file_path)
-                
-                # Get file creation date
-                creation_date = self.file_handler.get_file_creation_date(file_path)
-                  # Analyze document with LLM
-                analysis_result = self.llm_analyzer.analyze_document(
-                    extracted_text, 
-                    os.path.basename(file_path),
-                    creation_date,
-                    file_path  # Pass the full file path for image analysis
-                )
-                  # Generate new filename
-                new_filename = self.file_handler.generate_new_filename(
-                    analysis_result, 
-                    os.path.basename(file_path)
-                )
-                
-                # Get destination path
-                destination_path = self.file_handler.get_destination_path(analysis_result)
-                  # Store analysis result
-                analysis_data = {
-                    'original_path': file_path,
-                    'new_filename': new_filename,
-                    'destination_folder': os.path.relpath(destination_path, self.file_handler.base_output_dir),
-                    'identity': analysis_result['identity'],
-                    'date': analysis_result['date'],
-                    'description': analysis_result['description'],
-                    'category': analysis_result['category'],
-                    'extracted_text': extracted_text  # Store the extracted text for preview
-                }
-                self.analyzed_files.append(analysis_data)
-                
-                # Add to model
-                self.add_file_to_model(analysis_data)
-                
-            except Exception as e:
-                print(f"Error analyzing {file_path}: {str(e)}")
-                continue
+        # Disable analysis buttons during processing
+        self.analyze_selected_btn.setEnabled(False)
+        self.analyze_all_btn.setEnabled(False)
         
-        progress.setValue(len(file_list))
-        progress.close()
-          # Configure view after adding data
+        # Create and start analysis thread
+        self.analysis_thread = FileAnalysisThread(
+            file_list, 
+            self.document_processor, 
+            self.llm_analyzer, 
+            self.file_handler
+        )
+        
+        # Connect thread signals
+        self.analysis_thread.file_analyzed.connect(self.on_file_analyzed)
+        self.analysis_thread.progress_updated.connect(self.on_analysis_progress)
+        self.analysis_thread.analysis_finished.connect(self.on_analysis_finished)
+        self.analysis_thread.analysis_error.connect(self.on_analysis_error)
+        
+        # Start the thread
+        self.analysis_thread.start()
+    
+    def on_file_analyzed(self, analysis_data):
+        """Handle a completed file analysis"""
+        self.analyzed_files.append(analysis_data)
+        self.add_file_to_model(analysis_data)
+    
+    def on_analysis_progress(self, progress_value, current_file):
+        """Update progress bar during analysis"""
+        self.progress_bar.setValue(progress_value)
+        self.progress_bar.setFormat(f"Analyzing: {current_file} ({progress_value}/{self.progress_bar.maximum()})")
+    
+    def on_analysis_error(self, file_path, error_message):
+        """Handle analysis errors"""
+        logging.error(f"Error analyzing {file_path}: {error_message}")
+    
+    def on_analysis_finished(self):
+        """Handle completion of analysis"""
+        # Hide progress bar and cancel button
+        self.progress_widget.setVisible(False)
+        self.progress_bar.setVisible(False)
+        self.cancel_analysis_btn.setVisible(False)
+        
+        # Re-enable analysis buttons
+        self.analyze_selected_btn.setEnabled(True)
+        self.analyze_all_btn.setEnabled(True)
+        
+        # Configure view after adding data
         header = self.file_view.header()
         if header is not None:
             # Fix the checkbox column (0) width and prevent resizing
@@ -959,6 +1054,42 @@ class FileOrganizerGUI(QMainWindow):
 
         # Update preview if available
         self.update_preview()
+        
+        # Show completion message
+        QMessageBox.information(self, "Analysis Complete", f"Analysis completed. {len(self.analyzed_files)} files processed.")
+        
+        # Clean up thread
+        self.analysis_thread.deleteLater()
+        self.analysis_thread = None
+    
+    def cancel_analysis(self):
+        """Cancel the running analysis"""
+        if self.analysis_thread and self.analysis_thread.isRunning():
+            reply = QMessageBox.question(
+                self, 
+                "Cancel Analysis", 
+                "Are you sure you want to cancel the analysis?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                self.analysis_thread.stop()
+                
+                # Hide progress bar and cancel button
+                self.progress_widget.setVisible(False)
+                self.progress_bar.setVisible(False)
+                self.cancel_analysis_btn.setVisible(False)
+                
+                # Re-enable analysis buttons
+                self.analyze_selected_btn.setEnabled(True)
+                self.analyze_all_btn.setEnabled(True)
+                
+                # Clean up thread
+                self.analysis_thread.deleteLater()
+                self.analysis_thread = None
+                
+                QMessageBox.information(self, "Analysis Cancelled", "Analysis has been cancelled.")
     
     def get_extracted_text_for_file(self, file_path):
         """Get the stored extracted text for a file from analysis data"""
@@ -1312,6 +1443,13 @@ class FileOrganizerGUI(QMainWindow):
 
     def closeEvent(self, event):
         """Save configuration when the application is closing."""
+        # Stop analysis thread if running
+        if self.analysis_thread and self.analysis_thread.isRunning():
+            self.analysis_thread.stop()
+            self.analysis_thread.wait(5000)  # Wait up to 5 seconds for thread to finish
+            if self.analysis_thread.isRunning():
+                self.analysis_thread.terminate()  # Force terminate if still running
+        
         # Remove our logging handler to prevent issues
         if hasattr(self, 'qt_log_handler'):
             root_logger = logging.getLogger()

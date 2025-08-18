@@ -203,8 +203,8 @@ class LLMAnalyzer:
             return self._create_image_fallback_result(filename, creation_date)
         try:
             # Create prompt for visual analysis
-            prompt = """Analyze this image to extract document information. Look for:
-            1. Any visible text or names (especially "Chuck Collard", "Charles Collard", "Charles W Collard", "Colleen McGinnis", or "Colleen Collard")
+            prompt = """Analyze this image to extract document information. Focus on:
+            1. Extract ALL visible text accurately, including any names, addresses, dates, amounts, or other important information
             2. What type of document this appears to be
             3. Any visible dates
             4. A brief descriptive title for the document (5 words or less)
@@ -228,10 +228,9 @@ class LLMAnalyzer:
 
             Based on what you can see in this image, respond in JSON format:
              {
-                 "identity": "your guess here (Chuck or Colleen or Unknown)",
                  "description": "Brief descriptive title",
                  "category": "Your best category suggestion here",
-                 "visible_text": "Any text you can clearly read",
+                 "visible_text": "ALL text you can clearly read from the document (be thorough)",
                  "document_type": "What type of document this appears to be"
              }"""
             
@@ -260,9 +259,12 @@ class LLMAnalyzer:
                     
                     # Extract date from filename or use creation date
                     date = self._extract_date("", filename, creation_date)
+                    
+                    # Get visible text from vision analysis
+                    visible_text = result.get("visible_text", "").strip()
+                    
                     # If image has no visible text, treat as photo
-                    visible = result.get("visible_text", "").strip()
-                    if not visible:
+                    if not visible_text:
                         # Clean filename for description
                         base = os.path.splitext(filename)[0]
                         desc = base.replace('_', ' ').replace('-', ' ').title()
@@ -272,12 +274,19 @@ class LLMAnalyzer:
                             "description": desc,
                             "category": "Photography"
                         }
-                    # Otherwise use LLM result
+                    
+                    # Use the visible text for identity detection instead of vision LLM guess
+                    identity = self._identify_person(visible_text)
+                    
+                    # Extract date from the visible text
+                    extracted_date = self._extract_date(visible_text, filename, creation_date)
+                    
+                    # Use LLM result for description and category, but our identity detection
                     return {
-                        "identity": result.get("identity", "Unknown"),
-                        "date": date,
+                        "identity": identity,
+                        "date": extracted_date,
                         "description": result.get("description", "Image Document"),
-                        "category": result.get("category", "Uncategorized")
+                        "category": result.get("category", "Other")
                     }
                 except json.JSONDecodeError as json_err:
                     logging.warning(f"JSON decode error for vision analysis of {filename}: {json_err}")
@@ -342,11 +351,14 @@ class LLMAnalyzer:
     def _identify_person(self, text):
         """Identify if the document belongs to Chuck or Colleen."""
         chuck_patterns = [
-            r"Charles\s+Collard", r"Chuck\s+Collard", r"Charles\s+W\.?\s+Collard"
+            r"Charles\s+Collard", r"Chuck\s+Collard", r"Charles\s+W\.?\s+Collard",
+            r"Charles\s+Colle", r"Chuck\s+Colle",  # Handle OCR truncation
+            r"COLLARD,\s*CHARLES", r"Charles\s+W\s+Collard"  # Handle different formats
         ]
         
         colleen_patterns = [
-            r"Colleen\s+McGinnis", r"Colleen\s+Collard", r"Colleen\s+Mueginnis"
+            r"Colleen\s+McGinnis", r"Colleen\s+Collard", r"Colleen\s+Mueginnis",
+            r"Colleen\s+McGinn", r"Colleen\s+Coll"  # Handle OCR truncation
         ]
         
         # Check for Chuck

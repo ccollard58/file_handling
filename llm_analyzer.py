@@ -17,11 +17,35 @@ class LLMAnalyzer:
         self.initialize_llm()
         self.initialize_vision_llm()
 
+    def _is_qwen_model(self, model_name):
+        """Check if the model is a Qwen model that requires specific hyperparameters."""
+        if not model_name:
+            return False
+        
+        model_lower = model_name.lower()
+        qwen_patterns = [
+            'qwen',
+            'qwq'
+        ]
+        
+        return any(pattern in model_lower for pattern in qwen_patterns)
+
     def initialize_llm(self):
         """Initializes the OllamaLLM instance."""
         try:
-            self.llm = OllamaLLM(model=self.model, temperature=self.temperature)
-            logging.info(f"LLM initialized successfully with model {self.model} and temperature {self.temperature}")
+            # Check if this is a Qwen model and use specific hyperparameters
+            if self._is_qwen_model(self.model):
+                self.llm = OllamaLLM(
+                    model=self.model, 
+                    temperature=self.temperature,
+                    top_p=0.8,
+                    top_k=20,
+                    min_p=0.0
+                )
+                logging.info(f"LLM initialized successfully with Qwen model {self.model}, temperature {self.temperature}, top_p=0.8, top_k=20, min_p=0.0")
+            else:
+                self.llm = OllamaLLM(model=self.model, temperature=self.temperature)
+                logging.info(f"LLM initialized successfully with model {self.model} and temperature {self.temperature}")
         except Exception as e:
             logging.error(f"Error initializing LLM: {str(e)}")
             self.llm = None  # Ensure llm is None if initialization fails
@@ -30,8 +54,19 @@ class LLMAnalyzer:
     def initialize_vision_llm(self):
         """Initializes the vision-capable OllamaLLM instance with temperature 0.0 for deterministic analysis."""
         try:
-            self.vision_llm = OllamaLLM(model=self.vision_model, temperature=0.0)
-            logging.info(f"Vision LLM initialized successfully with model {self.vision_model} and temperature 0.0")
+            # Check if this is a Qwen vision model and use specific hyperparameters
+            if self._is_qwen_model(self.vision_model):
+                self.vision_llm = OllamaLLM(
+                    model=self.vision_model, 
+                    temperature=0.0,
+                    top_p=0.8,
+                    top_k=20,
+                    min_p=0.0
+                )
+                logging.info(f"Vision LLM initialized successfully with Qwen model {self.vision_model}, temperature 0.0, top_p=0.8, top_k=20, min_p=0.0")
+            else:
+                self.vision_llm = OllamaLLM(model=self.vision_model, temperature=0.0)
+                logging.info(f"Vision LLM initialized successfully with model {self.vision_model} and temperature 0.0")
         except Exception as e:
             logging.error(f"Error initializing Vision LLM: {str(e)}")
             self.vision_llm = None
@@ -79,8 +114,7 @@ class LLMAnalyzer:
                 'cogvlm',          # CogVLM models
                 'pixtral',         # Pixtral models
                 'gemma3',          # Gemma3 has vision capabilities
-                'llama4',          # Llama4 multimodal models
-                'qwq'              # QwQ models
+                'llama4'          # Llama4 multimodal models
             ]
             text_models = []
             
@@ -119,8 +153,7 @@ class LLMAnalyzer:
                 'cogvlm',          # CogVLM models
                 'pixtral',         # Pixtral models
                 'gemma3',          # Gemma3 has vision capabilities
-                'llama4',          # Llama4 multimodal models
-                'qwq'              # QwQ models
+                'llama4'           # Llama4 multimodal models
             ]
             vision_models = []
             

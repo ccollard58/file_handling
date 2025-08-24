@@ -1059,8 +1059,19 @@ class FileOrganizerGUI(QMainWindow):
         QMessageBox.information(self, "Analysis Complete", f"Analysis completed. {len(self.analyzed_files)} files processed.")
         
         # Clean up thread
-        self.analysis_thread.deleteLater()
-        self.analysis_thread = None
+        self._cleanup_analysis_thread()
+    
+    def _cleanup_analysis_thread(self):
+        """Safely clean up the analysis thread"""
+        if self.analysis_thread:
+            if self.analysis_thread.isRunning():
+                self.analysis_thread.stop()
+                if not self.analysis_thread.wait(3000):  # Wait up to 3 seconds
+                    self.analysis_thread.terminate()
+                    self.analysis_thread.wait()  # Wait for termination to complete
+            
+            self.analysis_thread.deleteLater()
+            self.analysis_thread = None
     
     def cancel_analysis(self):
         """Cancel the running analysis"""
@@ -1074,8 +1085,6 @@ class FileOrganizerGUI(QMainWindow):
             )
             
             if reply == QMessageBox.StandardButton.Yes:
-                self.analysis_thread.stop()
-                
                 # Hide progress bar and cancel button
                 self.progress_widget.setVisible(False)
                 self.progress_bar.setVisible(False)
@@ -1086,8 +1095,7 @@ class FileOrganizerGUI(QMainWindow):
                 self.analyze_all_btn.setEnabled(True)
                 
                 # Clean up thread
-                self.analysis_thread.deleteLater()
-                self.analysis_thread = None
+                self._cleanup_analysis_thread()
                 
                 QMessageBox.information(self, "Analysis Cancelled", "Analysis has been cancelled.")
     
@@ -1381,6 +1389,7 @@ class FileOrganizerGUI(QMainWindow):
         
         successful_moves = 0
         failed_moves = []
+        source_folders = set()  # Track source folders for cleanup
         
         for i, file_data in enumerate(selected_files):
             if progress.wasCanceled():
@@ -1411,11 +1420,23 @@ class FileOrganizerGUI(QMainWindow):
                 
                 if result:  # Success returns the new path
                     successful_moves += 1
+                    # Track the source folder for cleanup
+                    source_folder = os.path.dirname(file_data['original_path'])
+                    source_folders.add(source_folder)
                 else:  # Failure returns None
                     failed_moves.append(f"{file_data['new_filename']}: Failed to move file")
                     
             except Exception as e:
-                failed_moves.append(f"{file_data['new_filename']}: {str(e)}")
+                error_msg = str(e)
+                # Provide more user-friendly error messages for common issues
+                if "being used by another process" in error_msg:
+                    error_msg = "File is open in another application. Please close all PDF viewers and try again."
+                elif "Access is denied" in error_msg:
+                    error_msg = "Access denied. File may be read-only or you may need administrator permissions."
+                elif "Failed to move file after" in error_msg and "attempts" in error_msg:
+                    error_msg = "File is locked by another process. Please close any applications using this file."
+                
+                failed_moves.append(f"{file_data['new_filename']}: {error_msg}")
         
         progress.setValue(len(selected_files))
         progress.close()
@@ -1427,6 +1448,14 @@ class FileOrganizerGUI(QMainWindow):
             if len(failed_moves) > 5:
                 message += f"\n... and {len(failed_moves) - 5} more"
         
+        # Clean up empty source folders after successful processing
+        if successful_moves > 0 and source_folders:
+            logging.info(f"Cleaning up {len(source_folders)} source folders after processing {successful_moves} files")
+            deleted_folders = self.file_handler.cleanup_empty_folders(list(source_folders))
+            if deleted_folders:
+                message += f"\n\nEmpty folders cleaned up: {len(deleted_folders)}"
+                logging.info(f"Deleted {len(deleted_folders)} empty folders: {deleted_folders}")
+        
         QMessageBox.information(self, "Processing Results", message)
         
         # Clear the results after successful processing
@@ -1437,18 +1466,15 @@ class FileOrganizerGUI(QMainWindow):
                 "Identity", "Date", "Description"
             ])
             self.analyzed_files = []
-            # Refresh source folder view after moving files
-            self.file_system_model.setRootPath(self.current_folder)
-            self.file_tree.setRootIndex(self.file_system_model.index(self.current_folder))
+            # Refresh source folder view after moving files and deleting empty folders
+            if self.current_folder:
+                self.file_system_model.setRootPath(self.current_folder)
+                self.file_tree.setRootIndex(self.file_system_model.index(self.current_folder))
 
     def closeEvent(self, event):
         """Save configuration when the application is closing."""
         # Stop analysis thread if running
-        if self.analysis_thread and self.analysis_thread.isRunning():
-            self.analysis_thread.stop()
-            self.analysis_thread.wait(5000)  # Wait up to 5 seconds for thread to finish
-            if self.analysis_thread.isRunning():
-                self.analysis_thread.terminate()  # Force terminate if still running
+        self._cleanup_analysis_thread()
         
         # Remove our logging handler to prevent issues
         if hasattr(self, 'qt_log_handler'):
@@ -1479,19 +1505,69 @@ class FileOrganizerGUI(QMainWindow):
 
     def undo_last_action_gui(self):
         """Handle undo of the last file action via GUI"""
-        result = self.file_handler.undo_last_action()
-        if result:
-            QMessageBox.information(self, "Undo Last", "Last action undone successfully.")
-        else:
-            QMessageBox.information(self, "Undo Last", "No actions to undo.")
+        try:
+            result = self.file_handler.undo_last_action()
+            if result:
+                QMessageBox.information(self, "Undo Last", "Last action undone successfully.")
+            else:
+                QMessageBox.warning(self, "Undo Last", "Could not undo the last action. Either no actions to undo or the file could not be restored.")
+        except Exception as e:
+            logging.error(f"Error in undo_last_action_gui: {str(e)}")
+            QMessageBox.critical(self, "Undo Error", f"An error occurred while undoing the last action:\n{str(e)}")
     
     def undo_all_actions_gui(self):
         """Handle undo of all file actions via GUI"""
-        result = self.file_handler.undo_all_actions()
-        if result:
-            QMessageBox.information(self, "Undo All", "All actions undone successfully.")
-        else:
-            QMessageBox.information(self, "Undo All", "No actions to undo.")
+        try:
+            # Load current actions to check if there are any
+            actions = self.file_handler._load_actions()
+            if not actions:
+                QMessageBox.information(self, "Undo All", "No actions to undo.")
+                return
+            
+            # Confirm with user since this could be a big operation
+            reply = QMessageBox.question(
+                self, 
+                "Confirm Undo All", 
+                f"Are you sure you want to undo all {len(actions)} file actions?\n\n"
+                "This will attempt to restore all processed files to their original locations.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            
+            result = self.file_handler.undo_all_actions()
+            
+            # Check how many actions are left (failed undos)
+            remaining_actions = self.file_handler._load_actions()
+            
+            if result:
+                if remaining_actions:
+                    # Partial success
+                    successful_count = len(actions) - len(remaining_actions)
+                    QMessageBox.warning(
+                        self, 
+                        "Undo All - Partial Success", 
+                        f"Undo partially completed:\n"
+                        f"• Successfully undone: {successful_count} actions\n"
+                        f"• Failed to undo: {len(remaining_actions)} actions\n\n"
+                        "Some files may have been moved or deleted manually. "
+                        "Check the logs for more details."
+                    )
+                else:
+                    # Complete success
+                    QMessageBox.information(self, "Undo All", "All actions undone successfully.")
+            else:
+                QMessageBox.warning(
+                    self, 
+                    "Undo All Failed", 
+                    "Could not undo any actions. Files may have been moved or deleted manually. "
+                    "Check the logs for more details."
+                )
+        except Exception as e:
+            logging.error(f"Error in undo_all_actions_gui: {str(e)}")
+            QMessageBox.critical(self, "Undo Error", f"An error occurred while undoing actions:\n{str(e)}")
 
 def main():
     """Main function to run the GUI application"""

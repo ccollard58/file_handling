@@ -1,4 +1,6 @@
 import os
+import subprocess
+import tempfile
 import pytesseract
 from PIL import Image, ImageEnhance
 from pypdf import PdfReader
@@ -40,6 +42,19 @@ class DocumentProcessor:
         # Setup Poppler path for PDF OCR if provided via environment
         poppler_env = os.getenv('POPPLER_PATH')
         self.poppler_path = poppler_env if poppler_env else None
+        
+        # Setup LibreOffice (soffice) path for .doc conversion fallback
+        self.soffice_path = os.getenv('LIBREOFFICE_PATH')
+        if not self.soffice_path:
+            # Try common Windows install paths
+            possible_paths = [
+                r"C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+                r"C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe",
+            ]
+            for p in possible_paths:
+                if os.path.isfile(p):
+                    self.soffice_path = p
+                    break
         
         # Check if PDF OCR is available
         self.pdf_ocr_available = PDF2IMAGE_AVAILABLE
@@ -120,22 +135,44 @@ class DocumentProcessor:
             
             # Special handling for TIFF images, which can sometimes cause OCR issues
             if file_path.lower().endswith(('.tif', '.tiff')):
-                # Convert to RGB if needed
-                if image.mode not in ('RGB', 'L'):
-                    image = image.convert('RGB')
+                # Some TIFFs are multi-page; iterate frames when present
+                total_frames = getattr(image, 'n_frames', 1)
+                text_chunks = []
                 
-                # Log the TIFF processing
-                logging.info(f"Processing TIFF image: {file_path}, mode: {image.mode}, size: {image.size}")
+                for frame_index in range(total_frames):
+                    try:
+                        if total_frames > 1:
+                            image.seek(frame_index)
+                        frame = image
+                        
+                        # Convert to a suitable mode for OCR
+                        if frame.mode not in ('RGB', 'L'):
+                            frame = frame.convert('RGB')
+                        
+                        # Log the TIFF processing
+                        logging.info(f"Processing TIFF image: {file_path}, frame {frame_index+1}/{total_frames}, mode: {frame.mode}, size: {frame.size}")
+                        
+                        # Some TIFF files might benefit from image enhancement for OCR
+                        try:
+                            enhancer = ImageEnhance.Contrast(frame)
+                            frame = enhancer.enhance(1.5)  # Boost contrast by 50%
+                        except Exception as e:
+                            logging.warning(f"Could not enhance TIFF image frame {frame_index+1}: {str(e)}")
+                        
+                        frame_text = pytesseract.image_to_string(frame)
+                        if frame_text and frame_text.strip():
+                            text_chunks.append(frame_text)
+                    except EOFError:
+                        # Safety for malformed multi-page TIFFs
+                        break
+                    except Exception as e:
+                        logging.warning(f"Error processing TIFF frame {frame_index+1}: {e}")
+                        continue
                 
-                # Some TIFF files might benefit from image enhancement for OCR
-                try:
-                    # Increase contrast slightly to help OCR
-                    enhancer = ImageEnhance.Contrast(image)
-                    image = enhancer.enhance(1.5)  # Boost contrast by 50%
-                except Exception as e:
-                    logging.warning(f"Could not enhance TIFF image: {str(e)}")
-
-            text = pytesseract.image_to_string(image)
+                text = "\n".join(text_chunks)
+            else:
+                # Non-TIFF images processed directly
+                text = pytesseract.image_to_string(image)
             
             # For image files, add logging to help diagnose OCR issues
             if text.strip():
@@ -285,17 +322,213 @@ class DocumentProcessor:
     
     def _extract_text_from_doc(self, file_path):
         """Extract text from DOC file using Windows COM interface."""
+        word = None
+        doc = None
         try:
             import win32com.client
+            # Start a new Word instance invisibly
             word = win32com.client.Dispatch('Word.Application')
             word.Visible = False
-            doc = word.Documents.Open(file_path)
-            text = doc.Content.Text
-            doc.Close(False)
-            word.Quit()
-            return text
+            # Suppress alerts that can block automation (e.g., conversion prompts)
+            try:
+                word.DisplayAlerts = 0  # wdAlertsNone
+            except Exception:
+                pass
+
+            # Open the document read-only to reduce file locking
+            doc = word.Documents.Open(file_path, ReadOnly=True)
+
+            # Build text similar to .docx extraction: paragraphs first, then tables
+            parts = []
+
+            try:
+                for para in doc.Paragraphs:
+                    # Paragraph Range.Text includes trailing \r; normalize to newline
+                    txt = para.Range.Text
+                    if txt:
+                        parts.append(txt.replace('\r', '\n'))
+            except Exception as e:
+                logging.debug(f"DOC paragraph enumeration issue for {file_path}: {e}")
+
+            try:
+                for table in doc.Tables:
+                    for row in table.Rows:
+                        row_cells = []
+                        for cell in row.Cells:
+                            # Cell text typically ends with \r\x07 (cell end marker); strip markers
+                            cell_text = cell.Range.Text if hasattr(cell, 'Range') else ''
+                            if cell_text:
+                                cleaned = cell_text.replace('\x07', '').replace('\r', ' ').strip()
+                                row_cells.append(cleaned)
+                        if row_cells:
+                            parts.append('\t'.join(row_cells))
+                    parts.append('\n')
+            except Exception as e:
+                logging.debug(f"DOC table enumeration issue for {file_path}: {e}")
+
+            result = '\n'.join(p for p in parts if p is not None)
+            if not result.strip():
+                # Fallback to full document content if structured extraction produced nothing
+                try:
+                    result = doc.Content.Text
+                except Exception:
+                    result = ''
+
+            # Log a brief summary
+            preview = result.strip()[:80]
+            logging.info(f"Extracted {len(result.strip())} chars from DOC '{file_path}'" + (f": {preview}..." if preview else ""))
+            return result
+        except ImportError:
+            logging.error("pywin32 is required to process .doc files on Windows. Please install 'pywin32'.")
+            # Try non-COM fallbacks
+            fallback_text = self._extract_doc_with_fallbacks(file_path)
+            return fallback_text or ""
         except Exception as e:
-            logging.error(f"Error processing DOC {file_path}: {str(e)}")
+            err_msg = str(e)
+            logging.error(f"Error processing DOC {file_path}: {err_msg}")
+            # COM failure like Class not registered (-2147221164) or Word not installed
+            if 'Class not registered' in err_msg or '-2147221164' in err_msg or 'Invalid class string' in err_msg:
+                logging.warning("Microsoft Word COM automation not available. Attempting fallback conversion methods (LibreOffice/antiword).")
+                fallback_text = self._extract_doc_with_fallbacks(file_path)
+                return fallback_text or ""
+            else:
+                # Generic error -> still try fallbacks as a safety net
+                fallback_text = self._extract_doc_with_fallbacks(file_path)
+                return fallback_text or ""
+        finally:
+            # Ensure resources are released even on errors
+            try:
+                if doc is not None:
+                    doc.Close(False)
+            except Exception:
+                pass
+            try:
+                if word is not None:
+                    word.Quit()
+            except Exception:
+                pass
+
+    def _extract_doc_with_fallbacks(self, file_path):
+        """Attempt to extract text from .doc using external tools when COM/Word isn't available.
+
+        Order:
+        1) LibreOffice (soffice) convert-to txt
+        2) LibreOffice convert-to docx then parse with python-docx
+        3) antiword utility (if installed)
+        Returns extracted text or empty string.
+        """
+        # 1) Try LibreOffice to TXT
+        text = self._doc_to_txt_with_libreoffice(file_path)
+        if text and text.strip():
+            return text
+
+        # 2) Try LibreOffice to DOCX -> parse
+        text = self._doc_to_docx_with_libreoffice_then_parse(file_path)
+        if text and text.strip():
+            return text
+
+        # 3) Try antiword utility
+        text = self._doc_with_antiword(file_path)
+        if text and text.strip():
+            return text
+
+        # Provide helpful guidance
+        logging.warning(
+            "Could not extract text from .doc using fallbacks. To enable robust .doc processing, install LibreOffice and set LIBREOFFICE_PATH to soffice.exe, or install 'antiword' and add it to PATH."
+        )
+        return ""
+
+    def _doc_to_txt_with_libreoffice(self, file_path):
+        """Use LibreOffice headless conversion to produce a plain text file."""
+        soffice = self.soffice_path or 'soffice'
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                cmd = [
+                    soffice, '--headless', '--convert-to', 'txt:Text', '--outdir', tmpdir, file_path
+                ]
+                logging.info(f"Attempting LibreOffice TXT conversion for .doc: {file_path}")
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if proc.returncode != 0:
+                    logging.debug(f"LibreOffice TXT conversion stderr: {proc.stderr.strip()}")
+                    return ""
+                # Find the output .txt file (same base name)
+                base = os.path.splitext(os.path.basename(file_path))[0]
+                out_path = os.path.join(tmpdir, base + '.txt')
+                if os.path.isfile(out_path):
+                    with open(out_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        data = f.read()
+                    logging.info(f"LibreOffice TXT conversion succeeded for {file_path}, {len(data.strip())} chars")
+                    return data
+                return ""
+        except FileNotFoundError:
+            # soffice not found
+            logging.debug("LibreOffice 'soffice' not found. Skipping TXT conversion.")
+            return ""
+        except subprocess.TimeoutExpired:
+            logging.warning("LibreOffice TXT conversion timed out.")
+            return ""
+        except Exception as e:
+            logging.debug(f"LibreOffice TXT conversion error: {e}")
+            return ""
+
+    def _doc_to_docx_with_libreoffice_then_parse(self, file_path):
+        """Convert .doc to .docx via LibreOffice then parse with python-docx."""
+        soffice = self.soffice_path or 'soffice'
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                cmd = [
+                    soffice, '--headless', '--convert-to', 'docx:Office Open XML Text', '--outdir', tmpdir, file_path
+                ]
+                logging.info(f"Attempting LibreOffice DOCX conversion for .doc: {file_path}")
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+                if proc.returncode != 0:
+                    logging.debug(f"LibreOffice DOCX conversion stderr: {proc.stderr.strip()}")
+                    return ""
+                base = os.path.splitext(os.path.basename(file_path))[0]
+                out_path = os.path.join(tmpdir, base + '.docx')
+                if os.path.isfile(out_path):
+                    try:
+                        return self._extract_text_from_docx(out_path)
+                    except Exception as e:
+                        logging.debug(f"Parsing converted DOCX failed: {e}")
+                        return ""
+                return ""
+        except FileNotFoundError:
+            logging.debug("LibreOffice 'soffice' not found. Skipping DOCX conversion.")
+            return ""
+        except subprocess.TimeoutExpired:
+            logging.warning("LibreOffice DOCX conversion timed out.")
+            return ""
+        except Exception as e:
+            logging.debug(f"LibreOffice DOCX conversion error: {e}")
+            return ""
+
+    def _doc_with_antiword(self, file_path):
+        """Use 'antiword' CLI if available to extract text from .doc."""
+        try:
+            # Check availability
+            avail = subprocess.run(['antiword', '-h'], capture_output=True, text=True)
+            if avail.returncode not in (0, 1):  # some builds return 1 on -h
+                return ""
+        except FileNotFoundError:
+            return ""
+        except Exception:
+            return ""
+
+        try:
+            proc = subprocess.run(['antiword', '-w', '0', file_path], capture_output=True)
+            if proc.returncode == 0 and proc.stdout:
+                try:
+                    text = proc.stdout.decode('utf-8', errors='ignore') if isinstance(proc.stdout, (bytes, bytearray)) else proc.stdout
+                except Exception:
+                    text = proc.stdout if isinstance(proc.stdout, str) else proc.stdout.decode('latin-1', errors='ignore')
+                logging.info(f"antiword extracted {len(text.strip())} chars from {file_path}")
+                return text
+            else:
+                logging.debug(f"antiword failed for {file_path} with code {proc.returncode}")
+                return ""
+        except Exception as e:
+            logging.debug(f"antiword error: {e}")
             return ""
     
     def _extract_text_from_xlsx(self, file_path):

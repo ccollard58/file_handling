@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
                            QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton, QTabWidget, QProgressBar)
-from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect, QObject, QDateTime
+from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect, QObject, QDateTime, QSortFilterProxyModel
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter, QFont
 from PyQt6.QtPdf import QPdfDocument
 
@@ -92,6 +92,77 @@ class CheckBoxDelegate(QStyledItemDelegate):
             new_state = Qt.CheckState.Unchecked if current_state == Qt.CheckState.Checked else Qt.CheckState.Checked
             return model.setData(index, new_state, Qt.ItemDataRole.CheckStateRole)
         return super().editorEvent(event, model, option, index)
+
+class ResultSortProxyModel(QSortFilterProxyModel):
+    """Proxy model to enable sorting by column with proper type handling (e.g., dates)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDynamicSortFilter(True)
+        self.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+
+    def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:
+        # Column mapping based on headers:
+        # 0: checkbox, 1: Original Filename, 2: New Filename, 3: Destination Folder,
+        # 4: Identity, 5: Date, 6: Description
+        column = left.column()
+
+        # For checkbox column sort unchecked before checked
+        if column == 0:
+            ls = self.sourceModel().data(left, Qt.ItemDataRole.CheckStateRole)
+            rs = self.sourceModel().data(right, Qt.ItemDataRole.CheckStateRole)
+            # Treat None as unchecked
+            lv = 1 if ls == Qt.CheckState.Checked else 0
+            rv = 1 if rs == Qt.CheckState.Checked else 0
+            return lv < rv
+
+        # Fetch display data
+        ldata = self.sourceModel().data(left, Qt.ItemDataRole.DisplayRole) or ""
+        rdata = self.sourceModel().data(right, Qt.ItemDataRole.DisplayRole) or ""
+
+        # Date column: attempt to parse into comparable tuples
+        if column == 5:
+            from datetime import datetime
+            def parse_date(s: str):
+                s = s.strip()
+                if not s:
+                    return None
+                # Try a few common patterns
+                patterns = [
+                    "%Y-%m-%d",
+                    "%Y/%m/%d",
+                    "%m/%d/%Y",
+                    "%d/%m/%Y",
+                    "%b %d, %Y",
+                    "%B %d, %Y",
+                    "%Y-%m-%d %H:%M:%S",
+                ]
+                # fromisoformat
+                try:
+                    return datetime.fromisoformat(s)
+                except Exception:
+                    pass
+                for p in patterns:
+                    try:
+                        return datetime.strptime(s, p)
+                    except Exception:
+                        continue
+                return None
+
+            ld = parse_date(ldata)
+            rd = parse_date(rdata)
+            if ld is not None and rd is not None:
+                return ld < rd
+            # Fallback to string compare
+
+        # Numeric-aware fallback: if both are integers, compare numerically
+        if isinstance(ldata, str) and ldata.isdigit() and isinstance(rdata, str) and rdata.isdigit():
+            try:
+                return int(ldata) < int(rdata)
+            except Exception:
+                pass
+
+        # Default: case-insensitive string compare
+        return str(ldata).lower() < str(rdata).lower()
 
 class FileFinderThread(QThread):
     """Thread to find files in background without freezing the UI"""
@@ -412,7 +483,11 @@ class FileOrganizerGUI(QMainWindow):
             "✓", "Original Filename", "New Filename", "Destination Folder", 
             "Identity", "Date", "Description"
         ])
-        self.file_view.setModel(self.file_model)
+        # Sortable proxy model
+        self.proxy_model = ResultSortProxyModel(self)
+        self.proxy_model.setSourceModel(self.file_model)
+        self.file_view.setModel(self.proxy_model)
+        self.file_view.setSortingEnabled(True)
         
         # Set custom delegate for centering checkboxes
         checkbox_delegate = CheckBoxDelegate()
@@ -512,6 +587,7 @@ class FileOrganizerGUI(QMainWindow):
             header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+            header.setSortIndicatorShown(True)
         
         # Connect selection change to preview update (only if selectionModel exists)
         selection_model = self.file_view.selectionModel()
@@ -1125,7 +1201,10 @@ class FileOrganizerGUI(QMainWindow):
             self.preview_image_label.setVisible(False)
             return
             
-        row_index = indexes[0].row()
+        # Map from proxy index (view) to source model row index
+        proxy_index = indexes[0]
+        source_index = self.proxy_model.mapToSource(proxy_index)
+        row_index = source_index.row()
         if 0 <= row_index < len(self.analyzed_files):
             file_path = self.analyzed_files[row_index]['original_path']
             self.show_file_preview(file_path)
@@ -1306,7 +1385,9 @@ class FileOrganizerGUI(QMainWindow):
         if not index.isValid():
             return
         
-        item = self.file_model.itemFromIndex(index)
+        # Map proxy index to source index for editing
+        source_index = self.proxy_model.mapToSource(index)
+        item = self.file_model.itemFromIndex(source_index)
         if not item:
             return
         
@@ -1317,8 +1398,8 @@ class FileOrganizerGUI(QMainWindow):
             item.setText(new_text)
             
             # Update the corresponding analysis data
-            row = index.row()
-            column = index.column()
+            row = source_index.row()
+            column = source_index.column()
             
             if row < len(self.analyzed_files):                
                 if column == 2:  # New filename

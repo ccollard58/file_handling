@@ -6,9 +6,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
-                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton, QTabWidget, QProgressBar)
+                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton, QTabWidget, QProgressBar, QAbstractItemView, QSizePolicy)
 from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect, QObject, QDateTime, QSortFilterProxyModel
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter, QFont
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter, QFont, QFontMetrics
 from PyQt6.QtPdf import QPdfDocument
 
 class QtLogHandler(logging.Handler, QObject):
@@ -474,7 +474,7 @@ class FileOrganizerGUI(QMainWindow):
         results_panel = QWidget()
         results_layout = QVBoxLayout(results_panel)
         
-        results_layout.addWidget(QLabel("Review Results"))
+        results_layout.addWidget(QLabel("Analysis Results"))
         
         # File list view for results
         self.file_view = QTreeView()
@@ -488,6 +488,9 @@ class FileOrganizerGUI(QMainWindow):
         self.proxy_model.setSourceModel(self.file_model)
         self.file_view.setModel(self.proxy_model)
         self.file_view.setSortingEnabled(True)
+        # Ensure horizontal scrollbar remains available even during column resizes
+        self.file_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.file_view.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         
         # Set custom delegate for centering checkboxes
         checkbox_delegate = CheckBoxDelegate()
@@ -507,7 +510,19 @@ class FileOrganizerGUI(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         self.progress_bar.setTextVisible(True)
-        progress_layout.addWidget(self.progress_bar)
+        # Keep progress bar text static to avoid width jitter
+        self.progress_bar.setFormat("%v/%m")
+        self.progress_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        progress_layout.addWidget(self.progress_bar, 1)
+
+        # Separate label for current filename to avoid resizing the bar
+        self.progress_label = QLabel("")
+        self.progress_label.setVisible(False)
+        self.progress_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.progress_label.setToolTip("Current file being analyzed")
+        # Slightly deemphasize
+        self.progress_label.setStyleSheet("QLabel { color: #666; }")
+        progress_layout.addWidget(self.progress_label, 2)
         
         self.cancel_analysis_btn = QPushButton("Cancel")
         self.cancel_analysis_btn.setVisible(False)
@@ -587,6 +602,8 @@ class FileOrganizerGUI(QMainWindow):
             header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+            # Do not stretch the last section; allow horizontal scrolling instead
+            header.setStretchLastSection(False)
             header.setSortIndicatorShown(True)
         
         # Connect selection change to preview update (only if selectionModel exists)
@@ -1063,10 +1080,14 @@ class FileOrganizerGUI(QMainWindow):
         # Show progress bar and cancel button
         self.progress_widget.setVisible(True)
         self.progress_bar.setVisible(True)
+        self.progress_label.setVisible(True)
         self.cancel_analysis_btn.setVisible(True)
         self.progress_bar.setMaximum(len(file_list))
         self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("Analyzing files... (0/{})".format(len(file_list)))
+        # Keep format fixed; move filename to adjacent label
+        self.progress_bar.setFormat("%v/%m")
+        self._current_progress_filename = "Starting analysis…"
+        self._update_progress_label()
         
         # Disable analysis buttons during processing
         self.analyze_selected_btn.setEnabled(False)
@@ -1097,7 +1118,9 @@ class FileOrganizerGUI(QMainWindow):
     def on_analysis_progress(self, progress_value, current_file):
         """Update progress bar during analysis"""
         self.progress_bar.setValue(progress_value)
-        self.progress_bar.setFormat(f"Analyzing: {current_file} ({progress_value}/{self.progress_bar.maximum()})")
+        # Update filename in separate label and keep bar text static
+        self._current_progress_filename = current_file
+        self._update_progress_label()
     
     def on_analysis_error(self, file_path, error_message):
         """Handle analysis errors"""
@@ -1109,6 +1132,7 @@ class FileOrganizerGUI(QMainWindow):
         self.progress_widget.setVisible(False)
         self.progress_bar.setVisible(False)
         self.cancel_analysis_btn.setVisible(False)
+        self.progress_label.setVisible(False)
         
         # Re-enable analysis buttons
         self.analyze_selected_btn.setEnabled(True)
@@ -1127,6 +1151,8 @@ class FileOrganizerGUI(QMainWindow):
             header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+            # Do not stretch the last section; allow horizontal scrolling instead
+            header.setStretchLastSection(False)
 
         # Update preview if available
         self.update_preview()
@@ -1165,6 +1191,7 @@ class FileOrganizerGUI(QMainWindow):
                 self.progress_widget.setVisible(False)
                 self.progress_bar.setVisible(False)
                 self.cancel_analysis_btn.setVisible(False)
+                self.progress_label.setVisible(False)
                 
                 # Re-enable analysis buttons
                 self.analyze_selected_btn.setEnabled(True)
@@ -1564,6 +1591,34 @@ class FileOrganizerGUI(QMainWindow):
         
         self.save_config()
         event.accept()
+
+    def _update_progress_label(self):
+        """Update and elide the progress filename label to fit available width."""
+        try:
+            if not hasattr(self, 'progress_label') or self.progress_label is None:
+                return
+            text = getattr(self, '_current_progress_filename', None)
+            if not text:
+                self.progress_label.setText("")
+                return
+            prefix = "Analyzing: "
+            full = prefix + text
+            fm = self.progress_label.fontMetrics() if hasattr(self.progress_label, 'fontMetrics') else QFontMetrics(self.font())
+            width = self.progress_label.width()
+            if width <= 0:
+                self.progress_label.setText(full)
+                return
+            elided = fm.elidedText(full, Qt.TextElideMode.ElideMiddle, width - 8)
+            self.progress_label.setText(elided)
+        except Exception:
+            # Fallback: set raw text
+            self.progress_label.setText(f"Analyzing: {getattr(self, '_current_progress_filename', '')}")
+
+    def resizeEvent(self, event):
+        """Ensure progress label stays elided correctly on resize."""
+        super().resizeEvent(event)
+        if hasattr(self, 'progress_label') and self.progress_label.isVisible():
+            self._update_progress_label()
 
     def set_default_source_folder(self, folder_path):
         """Set the default source folder and initialize the file browser"""

@@ -5,6 +5,7 @@ import json
 import requests
 from datetime import datetime
 from langchain_ollama import OllamaLLM
+from langchain_ollama.chat_models import ChatOllama
 from langchain.prompts import PromptTemplate
 
 class LLMAnalyzer:
@@ -435,6 +436,7 @@ class LLMAnalyzer:
             - If the document is related to the Catholic Church, religious activities, volunteering at church, 
               or contains terms like "diocese", "parish", "ministry", "faith", then it belongs to Colleen.
             - If the document contains any church-related content, always assign it to Colleen.
+            - If the document contains hearing-related content, it likely belongs to Chuck.
             - Look for any variation of the names including different spellings.
 
             Document text:
@@ -444,14 +446,14 @@ class LLMAnalyzer:
             """
         )
         
-        formatted_prompt = prompt.format(text=text[:1000])
+        formatted_prompt = prompt.format(text=text[:5000])
         logging.info("=== LLM IDENTITY DETECTION ===")
         logging.info(f"Model: {self.model}")
         logging.info(f"Text preview: {text[:100]}...")
         logging.debug(f"Full prompt sent to LLM:\n{formatted_prompt}")
-        
-        response = self.llm.invoke(formatted_prompt)  # Use first 1000 chars for efficiency
-        
+
+        response = self.llm.invoke(formatted_prompt)  # Use first 5000 chars for efficiency
+
         logging.info(f"LLM response: {response.strip()}")
         logging.info("=== END LLM IDENTITY DETECTION ===")
         

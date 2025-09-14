@@ -7,8 +7,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
                            QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton, QTabWidget, QProgressBar, QAbstractItemView, QSizePolicy)
-from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect, QObject, QDateTime, QSortFilterProxyModel
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter, QFont, QFontMetrics
+from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect, QObject, QDateTime, QSortFilterProxyModel, QUrl
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter, QFont, QFontMetrics, QDesktopServices
 from PyQt6.QtPdf import QPdfDocument
 
 class QtLogHandler(logging.Handler, QObject):
@@ -451,6 +451,10 @@ class FileOrganizerGUI(QMainWindow):
         self.file_system_model = QFileSystemModel()
         self.file_tree.setModel(self.file_system_model)
         self.file_tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
+        # Enable opening files from the source pane
+        self.file_tree.doubleClicked.connect(self.open_in_source_pane)
+        self.file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.file_tree.customContextMenuRequested.connect(self.show_source_context_menu)
         folder_layout.addWidget(self.file_tree)
         
         # Action buttons
@@ -625,6 +629,107 @@ class FileOrganizerGUI(QMainWindow):
                 if selection_model is not None:
                     selection_model.selectionChanged.connect(self.update_preview)
             QTimer.singleShot(0, connect_when_ready)
+
+    def show_source_context_menu(self, position):
+        """Context menu for the source pane (file_tree)."""
+        try:
+            index = self.file_tree.indexAt(position)
+            menu = QMenu(self)
+            open_action = QAction("Open", self)
+            open_action.triggered.connect(self.open_selected_in_source_pane)
+            menu.addAction(open_action)
+
+            open_folder_action = QAction("Open Containing Folder", self)
+            open_folder_action.triggered.connect(self.open_selected_containing_folders)
+            menu.addAction(open_folder_action)
+
+            # Only show if a valid index
+            viewport = self.file_tree.viewport()
+            if viewport is not None:
+                global_pos = viewport.mapToGlobal(position)
+                menu.exec(global_pos)
+        except Exception as e:
+            logging.error(f"Error showing source context menu: {e}")
+
+    def open_selected_in_source_pane(self):
+        """Open selected file(s) from the source tree using the OS default handler."""
+        try:
+            paths = []
+            selection_model = self.file_tree.selectionModel()
+            if selection_model:
+                for idx in selection_model.selectedRows(0):
+                    path = self.file_system_model.filePath(idx)
+                    if os.path.isfile(path):
+                        paths.append(path)
+            if not paths:
+                return
+            self.open_file_paths(paths)
+        except Exception as e:
+            logging.error(f"Error opening selection: {e}")
+
+    def open_selected_containing_folders(self):
+        """Open the containing folder(s) for the selected items in the OS file browser."""
+        try:
+            folders = set()
+            selection_model = self.file_tree.selectionModel()
+            if selection_model:
+                for idx in selection_model.selectedRows(0):
+                    path = self.file_system_model.filePath(idx)
+                    folder = path if os.path.isdir(path) else os.path.dirname(path)
+                    if folder and os.path.isdir(folder):
+                        folders.add(folder)
+            if not folders:
+                return
+            for folder in sorted(folders):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        except Exception as e:
+            logging.error(f"Error opening containing folders: {e}")
+
+    def open_in_source_pane(self, index: QModelIndex):
+        """Handle double-click on the source tree: open file or expand/collapse folder."""
+        try:
+            if not index.isValid():
+                return
+            path = self.file_system_model.filePath(index)
+            if os.path.isdir(path):
+                # Toggle expand/collapse on folders
+                if self.file_tree.isExpanded(index):
+                    self.file_tree.collapse(index)
+                else:
+                    self.file_tree.expand(index)
+            else:
+                self.open_file_paths([path])
+        except Exception as e:
+            logging.error(f"Error handling double-click: {e}")
+
+    def open_file_paths(self, paths: list[str]):
+        """Open a list of file paths with the default OS application.
+
+        Caps the number opened at once to avoid accidental mass-launches.
+        """
+        try:
+            if not paths:
+                return
+            MAX_OPEN = 10
+            if len(paths) > MAX_OPEN:
+                reply = QMessageBox.question(
+                    self,
+                    "Open Many Files",
+                    f"You are opening {len(paths)} files. Open only the first {MAX_OPEN}?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    paths = paths[:MAX_OPEN]
+            for p in paths:
+                if os.path.exists(p):
+                    ok = QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+                    if not ok:
+                        logging.warning(f"OS refused to open: {p}")
+                else:
+                    logging.warning(f"Path not found: {p}")
+        except Exception as e:
+            logging.error(f"Error opening files: {e}")
     
     def create_settings_tab(self):
         """Create the settings configuration tab"""

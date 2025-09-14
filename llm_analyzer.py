@@ -333,7 +333,7 @@ class LLMAnalyzer:
             For the category, suggest the BEST category name that describes what type of document this is. Use one of the following categories with their descriptions and examples:
             - "Medical": Documents related to personal and family health, including prescriptions, exam results, insurance information, and wellness records. Examples: Medical Imaging Reports, Lab Results, Physical Therapy Plans, Dulera Prescription, Eye Exam Prescription, Pupil Distance Waiver Form
             - "Identification": Passports, driver's licenses, IDs, and vital records. Examples: Passport, Driver's License, Birth Certificate, Social Security Card
-            - "Home": Documents related to your residence, including purchase agreements, maintenance records, utilities and property information. Examples: Home Warranty, Property Tax Documents, Construction Permits, Mortgage Papers, Closing Documents, Homeowner Insurance, Electricity Bills, Cable Bills
+            - "Home": Documents related to your residence, including purchase agreements, maintenance records, utilities, property information, and plant/gardening activities. Examples: Home Warranty, Property Tax Documents, Construction Permits, Mortgage Papers, Closing Documents, Homeowner Insurance, Electricity Bills, Cable Bills, Plant Care Guides, Garden Plans, Landscaping Documents
             - "Auto": Car titles, maintenance records, and vehicle-related paperwork. Examples: Car Title, Auto Repair Records, Registration Documents, Insurance Claim Forms, BMW Warranty Extension Details
             - "SysAdmin": Documents related to software, network configurations, and technical instructions, including Software licenses, user manuals, and tech warranties. Examples: Software Licenses, Hardware Specifications, Appliance Manuals, Product Warranties, Network Configuration Diagram, Technical Error Report
             - "School": Degrees, transcripts, and academic records. Examples: Degree Certificates, Transcripts, Course Materials, Student Loans Documents, FranklinCovey Training Notes
@@ -559,28 +559,28 @@ class LLMAnalyzer:
         # Try to infer category from filename based on user-defined categories
         filename_lower = filename.lower()
         
-        # Define category keywords with updated definitions
+        # Define category keywords with updated definitions (order matters - more specific first)
         if any(word in filename_lower for word in ['medical', 'prescription', 'lab', 'clinic', 'health', 'imaging', 'wellness']):
             category = "Medical"
-        elif any(word in filename_lower for word in ['passport', 'driver', 'license', 'id', 'birth', 'social', 'vital']):
-            category = "Identification"
-        elif any(word in filename_lower for word in ['home', 'warranty', 'property', 'tax', 'permit', 'mortgage', 'closing', 'insurance', 'electricity', 'cable', 'utilities', 'maintenance']):
+        elif any(word in filename_lower for word in ['home', 'warranty', 'property', 'tax', 'permit', 'mortgage', 'closing', 'electricity', 'cable', 'utilities', 'maintenance', 'plant', 'plants', 'garden', 'gardening', 'flower', 'flowers', 'tree', 'trees', 'seed', 'seeds', 'fertilizer', 'soil', 'compost', 'landscaping', 'yard', 'lawn']):
             category = "Home"
-        elif any(word in filename_lower for word in ['car', 'auto', 'vehicle', 'registration', 'repair', 'title', 'insurance', 'claim', 'maintenance']):
+        elif any(word in filename_lower for word in ['passport', 'driver', 'license', 'birth', 'social', 'vital']) or filename_lower in ['id.jpg', 'id.png', 'id.pdf', 'id.doc', 'id.docx'] or filename_lower.startswith('id_') or filename_lower.endswith('_id'):
+            category = "Identification"
+        elif any(word in filename_lower for word in ['car', 'auto', 'vehicle', 'registration', 'repair', 'title', 'claim']):
             category = "Auto"
-        elif any(word in filename_lower for word in ['software', 'license', 'manual', 'warranty', 'network', 'config', 'technical', 'appliance', 'hardware', 'diagram', 'error']):
+        elif any(word in filename_lower for word in ['software', 'manual', 'warranty', 'network', 'config', 'technical', 'appliance', 'hardware', 'diagram', 'error']):
             category = "SysAdmin"
         elif any(word in filename_lower for word in ['degree', 'transcript', 'course', 'student', 'training', 'academic']):
             category = "School"
         elif any(word in filename_lower for word in ['recipe', 'cookbook', 'meal', 'plan', 'diet', 'culinary']):
             category = "Cooking"
-        elif any(word in filename_lower for word in ['bank', 'statement', 'invoice', 'tax', 'will', 'paystub', 'payment', 'investment']):
+        elif any(word in filename_lower for word in ['bank', 'statement', 'invoice', 'will', 'paystub', 'payment', 'investment']):
             category = "Financial"
         elif any(word in filename_lower for word in ['itinerary', 'ticket', 'boarding', 'hotel', 'trip', 'tourism', 'reservation', 'vacation']):
             category = "Travel"
         elif any(word in filename_lower for word in ['employment', 'contract', 'pay', 'benefit', 'review', 'history', 'performance']):
             category = "Employment"
-        elif any(word in filename_lower for word in ['diy', 'guide', 'craft', 'pattern', 'art', 'hobby', 'media', 'copyright']):
+        elif any(word in filename_lower for word in ['diy', 'craft', 'pattern', 'art', 'hobby', 'media', 'copyright']) or 'guide' in filename_lower:
             category = "Hobbies"
         elif any(word in filename_lower for word in ['letter', 'note', 'ticket', 'stub', 'memory', 'photograph', 'photographs', 'photo']):
             category = "Memories"
@@ -630,6 +630,21 @@ class LLMAnalyzer:
             logging.warning("LLM not initialized, returning 'Unknown' for identity.")
             return "Unknown"
 
+        # Check if this is clearly a plant-related document
+        plant_keywords = [
+            'plant', 'plants', 'garden', 'gardening', 'flower', 'flowers', 'tree', 'trees',
+            'seed', 'seeds', 'fertilizer', 'soil', 'compost', 'watering', 'pruning',
+            'botanical', 'horticulture', 'landscaping', 'yard', 'lawn', 'shrub', 'shrubs',
+            'bulb', 'bulbs', 'perennial', 'annual', 'greenhouse', 'nursery', 'planting'
+        ]
+        
+        text_lower = text.lower()
+        is_plant_related = any(keyword in text_lower for keyword in plant_keywords)
+        
+        if is_plant_related:
+            logging.info("Document appears plant-related, assigning to Chuck")
+            return "Chuck"
+
         # Check if this is clearly a church-related document
         church_keywords = [
             'church', 'catholic', 'diocese', 'parish', 'volunteer', 'ministry', 
@@ -637,7 +652,6 @@ class LLMAnalyzer:
             'sacrament', 'confirmation', 'communion', 'baptism'
         ]
         
-        text_lower = text.lower()
         is_church_related = any(keyword in text_lower for keyword in church_keywords)
         
         if is_church_related:
@@ -652,6 +666,7 @@ class LLMAnalyzer:
             (also known as "Charles Collard" or "Charles W Collard") or "Colleen McGinnis" (also known as "Colleen Collard" or "Colleen Mueginnis").
             
             IMPORTANT RULES:
+            - If the document is related to plants, gardening, flowers, trees, landscaping, or any botanical content, it belongs to Chuck.
             - If the document is related to the Catholic Church, religious activities, volunteering at church, 
               or contains terms like "diocese", "parish", "ministry", "faith", then it belongs to Colleen.
             - If the document contains any church-related content, always assign it to Colleen.
@@ -747,7 +762,7 @@ class LLMAnalyzer:
             
             - "Medical": Documents related to personal and family health, including prescriptions, exam results, insurance information, and wellness records. Examples: Medical Imaging Reports, Lab Results, Physical Therapy Plans, Dulera Prescription, Eye Exam Prescription, Pupil Distance Waiver Form
             - "Identification": Passports, driver's licenses, IDs, and vital records. Examples: Passport, Driver's License, Birth Certificate, Social Security Card
-            - "Home": Documents related to your residence, including purchase agreements, maintenance records, utilities and property information. Examples: Home Warranty, Property Tax Documents, Construction Permits, Mortgage Papers, Closing Documents, Homeowner Insurance, Electricity Bills, Cable Bills
+            - "Home": Documents related to your residence, including purchase agreements, maintenance records, utilities, property information, and plant/gardening activities. Examples: Home Warranty, Property Tax Documents, Construction Permits, Mortgage Papers, Closing Documents, Homeowner Insurance, Electricity Bills, Cable Bills, Plant Care Guides, Garden Plans, Landscaping Documents
             - "Auto": Car titles, maintenance records, and vehicle-related paperwork. Examples: Car Title, Auto Repair Records, Registration Documents, Insurance Claim Forms, BMW Warranty Extension Details
             - "SysAdmin": Documents related to software, network configurations, and technical instructions, including Software licenses, user manuals, and tech warranties. Examples: Software Licenses, Hardware Specifications, Appliance Manuals, Product Warranties, Network Configuration Diagram, Technical Error Report
             - "School": Degrees, transcripts, and academic records. Examples: Degree Certificates, Transcripts, Course Materials, Student Loans Documents, FranklinCovey Training Notes

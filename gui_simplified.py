@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
                            QMessageBox, QHeaderView, QSplitter, QProgressDialog,
-                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton, QTabWidget, QProgressBar, QAbstractItemView, QSizePolicy)
+                           QMenu, QInputDialog, QGridLayout, QGroupBox, QTextEdit, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QStyleOptionButton, QToolButton, QTabWidget, QProgressBar, QAbstractItemView, QSizePolicy, QDialog)
 from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect, QObject, QDateTime, QSortFilterProxyModel, QUrl
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter, QFont, QFontMetrics, QDesktopServices
 from PyQt6.QtPdf import QPdfDocument
@@ -38,6 +38,76 @@ class QtLogHandler(logging.Handler, QObject):
         """Format the timestamp for display"""
         import time
         return time.strftime('%H:%M:%S', time.localtime(record.created))
+
+class EditDialog(QDialog):
+    """Custom dialog for editing long text values with appropriate sizing"""
+    
+    def __init__(self, parent=None, title="Edit", label="Enter new value:", text=""):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        
+        # Calculate appropriate size based on text length
+        min_width = 400
+        max_width = 1000  # Increased max width for very long filenames
+        # Estimate width based on text length (average 8 pixels per character)
+        estimated_width = max(min_width, min(max_width, len(text) * 8 + 100))
+        
+        # For very long text (>120 characters), use a slightly taller dialog
+        height = 180 if len(text) > 120 else 150
+        
+        self.setFixedSize(estimated_width, height)
+        
+        # Center the dialog on parent
+        if parent:
+            parent_rect = parent.geometry()
+            x = parent_rect.x() + (parent_rect.width() - estimated_width) // 2
+            y = parent_rect.y() + (parent_rect.height() - height) // 2
+            self.move(max(0, x), max(0, y))
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        
+        # Label
+        layout.addWidget(QLabel(label))
+        
+        # Text input - use QLineEdit which handles long text well with scrolling
+        self.text_edit = QLineEdit(text)
+        self.text_edit.selectAll()  # Select all text for easy replacement
+        
+        # Set a reasonable minimum width for the text field
+        self.text_edit.setMinimumWidth(estimated_width - 40)
+        
+        layout.addWidget(self.text_edit)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        self.ok_button = QPushButton("OK")
+        self.ok_button.setDefault(True)
+        self.ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(self.ok_button)
+        
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(self.cancel_button)
+        
+        layout.addLayout(button_layout)
+        
+        # Focus on text input
+        self.text_edit.setFocus()
+    
+    def get_text(self):
+        """Get the entered text"""
+        return self.text_edit.text()
+    
+    @staticmethod
+    def getText(parent, title, label, text=""):
+        """Static method similar to QInputDialog.getText()"""
+        dialog = EditDialog(parent, title, label, text)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            return dialog.get_text(), True
+        return text, False
 
 class CheckBoxDelegate(QStyledItemDelegate):
     """Custom delegate to center checkboxes in the first column"""
@@ -1190,6 +1260,28 @@ class FileOrganizerGUI(QMainWindow):
         ])
         self.analyzed_files = []
         
+        # Reset user resize flag for new analysis so columns can be auto-sized
+        self._user_resized_columns = False
+        
+        # Ensure columns are properly configured from the start
+        header = self.file_view.header()
+        if header is not None:
+            # Fix the checkbox column (0) width and prevent resizing
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+            header.resizeSection(0, 40)
+            # Configure other columns: interactive resizing
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+            # Do not stretch the last section; allow horizontal scrolling instead
+            header.setStretchLastSection(False)
+            
+        # Set initial column widths to fill the pane
+        QTimer.singleShot(50, lambda: self.adjust_results_column_widths(force=True))
+        
         # Show progress bar and cancel button
         self.progress_widget.setVisible(True)
         self.progress_bar.setVisible(True)
@@ -1267,8 +1359,8 @@ class FileOrganizerGUI(QMainWindow):
             # Do not stretch the last section; allow horizontal scrolling instead
             header.setStretchLastSection(False)
 
-        # After data is in place, perform an initial auto-sizing if the user hasn't resized
-        self.adjust_results_column_widths()
+        # Force column adjustment after analysis completes to ensure proper fit
+        QTimer.singleShot(100, lambda: self.adjust_results_column_widths(force=True))
 
         # Update preview if available
         self.update_preview()
@@ -1535,14 +1627,28 @@ class FileOrganizerGUI(QMainWindow):
             return
         
         current_text = item.text()
-        new_text, ok = QInputDialog.getText(self, "Edit", "Enter new value:", text=current_text)
+        
+        # Determine what we're editing for better dialog labels
+        column = source_index.column()
+        column_names = ["", "Original Filename", "New Filename", "Destination Folder", "Identity", "Date", "Description"]
+        if column < len(column_names):
+            field_name = column_names[column]
+        else:
+            field_name = "Value"
+        
+        # Use custom dialog for better sizing
+        new_text, ok = EditDialog.getText(
+            self, 
+            f"Edit {field_name}", 
+            f"Enter new {field_name.lower()}:", 
+            current_text
+        )
         
         if ok and new_text != current_text:
             item.setText(new_text)
             
             # Update the corresponding analysis data
             row = source_index.row()
-            column = source_index.column()
             
             if row < len(self.analyzed_files):                
                 if column == 2:  # New filename
@@ -1736,9 +1842,10 @@ class FileOrganizerGUI(QMainWindow):
         if hasattr(self, 'progress_label') and self.progress_label.isVisible():
             self._update_progress_label()
 
-        # If user hasn't manually resized columns yet, keep columns filling the pane on first layout
-        if hasattr(self, 'file_view'):
-            self.adjust_results_column_widths()
+        # If user hasn't manually resized columns yet, adjust columns to fill the pane on window resize
+        if hasattr(self, 'file_view') and not getattr(self, '_user_resized_columns', False):
+            # Use a small delay to ensure the layout is complete
+            QTimer.singleShot(50, lambda: self.adjust_results_column_widths(force=False))
 
     def set_default_source_folder(self, folder_path):
         """Set the default source folder and initialize the file browser"""
@@ -1839,7 +1946,7 @@ class FileOrganizerGUI(QMainWindow):
         column, we won't override their choices unless force=True.
         """
         try:
-            # Don't override user's manual sizes
+            # Don't override user's manual sizes unless forced
             if not force and getattr(self, '_user_resized_columns', False):
                 return
 
@@ -1856,9 +1963,12 @@ class FileOrganizerGUI(QMainWindow):
 
             total_width = viewport.width()
             if total_width <= 0:
-                # Try again on the next cycle if layout not ready
-                QTimer.singleShot(0, lambda: self.adjust_results_column_widths(force))
-                return
+                # Use the widget width as fallback
+                total_width = self.file_view.width()
+                if total_width <= 0:
+                    # Try again on the next cycle if layout not ready
+                    QTimer.singleShot(100, lambda: self.adjust_results_column_widths(force))
+                    return
 
             # Fixed width for column 0 (checkbox)
             fixed_col0 = 40
@@ -1870,7 +1980,9 @@ class FileOrganizerGUI(QMainWindow):
             # Minimum widths ensure usability on small windows
             min_widths = [150, 180, 180, 120, 120, 260]
 
-            available = max(0, total_width - fixed_col0 - 8)  # small padding
+            # Account for scrollbar width and padding
+            scrollbar_width = 20  # Estimate for vertical scrollbar
+            available = max(0, total_width - fixed_col0 - scrollbar_width)
 
             # Calculate width per column from weights
             widths = [max(int(available * w / weight_sum), mw) for w, mw in zip(weights, min_widths)]
@@ -1883,8 +1995,13 @@ class FileOrganizerGUI(QMainWindow):
             # Apply the sizes to sections 1..6
             for i, w in enumerate(widths, start=1):
                 header.resizeSection(i, w)
-        except Exception:
-            # Non-fatal; ignore sizing errors
+                
+            # Ensure the view updates properly
+            self.file_view.updateGeometry()
+            
+        except Exception as e:
+            # Non-fatal; log the error but continue
+            logging.debug(f"Error in adjust_results_column_widths: {e}")
             pass
 
 def main():

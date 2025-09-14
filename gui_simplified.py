@@ -605,6 +605,14 @@ class FileOrganizerGUI(QMainWindow):
             # Do not stretch the last section; allow horizontal scrolling instead
             header.setStretchLastSection(False)
             header.setSortIndicatorShown(True)
+
+        # Track if the user has resized any columns; if so, don't overwrite
+        self._user_resized_columns = False
+        if header is not None:
+            header.sectionResized.connect(self._on_results_section_resized)
+
+        # Defer initial auto-sizing so the view has calculated its viewport width
+        QTimer.singleShot(0, self.adjust_results_column_widths)
         
         # Connect selection change to preview update (only if selectionModel exists)
         selection_model = self.file_view.selectionModel()
@@ -1154,6 +1162,9 @@ class FileOrganizerGUI(QMainWindow):
             # Do not stretch the last section; allow horizontal scrolling instead
             header.setStretchLastSection(False)
 
+        # After data is in place, perform an initial auto-sizing if the user hasn't resized
+        self.adjust_results_column_widths()
+
         # Update preview if available
         self.update_preview()
         
@@ -1620,6 +1631,10 @@ class FileOrganizerGUI(QMainWindow):
         if hasattr(self, 'progress_label') and self.progress_label.isVisible():
             self._update_progress_label()
 
+        # If user hasn't manually resized columns yet, keep columns filling the pane on first layout
+        if hasattr(self, 'file_view'):
+            self.adjust_results_column_widths()
+
     def set_default_source_folder(self, folder_path):
         """Set the default source folder and initialize the file browser"""
         if folder_path and os.path.exists(folder_path):
@@ -1704,6 +1719,68 @@ class FileOrganizerGUI(QMainWindow):
         except Exception as e:
             logging.error(f"Error in undo_all_actions_gui: {str(e)}")
             QMessageBox.critical(self, "Undo Error", f"An error occurred while undoing actions:\n{str(e)}")
+
+    def _on_results_section_resized(self, logicalIndex, oldSize, newSize):
+        """Flag that the user has manually resized a column so we stop auto-fitting."""
+        try:
+            self._user_resized_columns = True
+        except Exception:
+            pass
+
+    def adjust_results_column_widths(self, force: bool = False):
+        """Auto-size the results columns to fill the pane initially with a larger Description column.
+
+        This runs once on startup and after analysis completes. If the user resizes any
+        column, we won't override their choices unless force=True.
+        """
+        try:
+            # Don't override user's manual sizes
+            if not force and getattr(self, '_user_resized_columns', False):
+                return
+
+            if not hasattr(self, 'file_view') or self.file_view is None:
+                return
+
+            header = self.file_view.header()
+            if header is None:
+                return
+
+            viewport = self.file_view.viewport()
+            if viewport is None:
+                return
+
+            total_width = viewport.width()
+            if total_width <= 0:
+                # Try again on the next cycle if layout not ready
+                QTimer.singleShot(0, lambda: self.adjust_results_column_widths(force))
+                return
+
+            # Fixed width for column 0 (checkbox)
+            fixed_col0 = 40
+
+            # Weights for columns 1..6 with a bias towards Description (index 6)
+            weights = [1.2, 1.2, 1.2, 0.8, 0.8, 2.4]
+            weight_sum = sum(weights)
+
+            # Minimum widths ensure usability on small windows
+            min_widths = [150, 180, 180, 120, 120, 260]
+
+            available = max(0, total_width - fixed_col0 - 8)  # small padding
+
+            # Calculate width per column from weights
+            widths = [max(int(available * w / weight_sum), mw) for w, mw in zip(weights, min_widths)]
+
+            total_assigned = sum(widths)
+            if total_assigned < available:
+                # Give the leftover space to Description
+                widths[-1] += (available - total_assigned)
+
+            # Apply the sizes to sections 1..6
+            for i, w in enumerate(widths, start=1):
+                header.resizeSection(i, w)
+        except Exception:
+            # Non-fatal; ignore sizing errors
+            pass
 
 def main():
     """Main function to run the GUI application"""

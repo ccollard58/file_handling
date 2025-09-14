@@ -234,8 +234,7 @@ class VisionModelEvaluator:
                 'cogvlm',          # CogVLM models
                 'pixtral',         # Pixtral models
                 'gemma3',          # Gemma3 has vision capabilities
-                'llama4',          # Llama4 multimodal models
-                'qwq'              # QwQ models
+                'llama4'           # Llama4 multimodal models
             ]
             
             vision_models = []

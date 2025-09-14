@@ -321,122 +321,39 @@ class DocumentProcessor:
             return ""
     
     def _extract_text_from_doc(self, file_path):
-        """Extract text from DOC file using Windows COM interface."""
-        word = None
-        doc = None
-        try:
-            import win32com.client
-            # Start a new Word instance invisibly
-            word = win32com.client.Dispatch('Word.Application')
-            word.Visible = False
-            # Suppress alerts that can block automation (e.g., conversion prompts)
-            try:
-                word.DisplayAlerts = 0  # wdAlertsNone
-            except Exception:
-                pass
+        """Extract text from DOC using external tools only (no Microsoft Word COM).
 
-            # Open the document read-only to reduce file locking
-            doc = word.Documents.Open(file_path, ReadOnly=True)
-
-            # Build text similar to .docx extraction: paragraphs first, then tables
-            parts = []
-
-            try:
-                for para in doc.Paragraphs:
-                    # Paragraph Range.Text includes trailing \r; normalize to newline
-                    txt = para.Range.Text
-                    if txt:
-                        parts.append(txt.replace('\r', '\n'))
-            except Exception as e:
-                logging.debug(f"DOC paragraph enumeration issue for {file_path}: {e}")
-
-            try:
-                for table in doc.Tables:
-                    for row in table.Rows:
-                        row_cells = []
-                        for cell in row.Cells:
-                            # Cell text typically ends with \r\x07 (cell end marker); strip markers
-                            cell_text = cell.Range.Text if hasattr(cell, 'Range') else ''
-                            if cell_text:
-                                cleaned = cell_text.replace('\x07', '').replace('\r', ' ').strip()
-                                row_cells.append(cleaned)
-                        if row_cells:
-                            parts.append('\t'.join(row_cells))
-                    parts.append('\n')
-            except Exception as e:
-                logging.debug(f"DOC table enumeration issue for {file_path}: {e}")
-
-            result = '\n'.join(p for p in parts if p is not None)
-            if not result.strip():
-                # Fallback to full document content if structured extraction produced nothing
-                try:
-                    result = doc.Content.Text
-                except Exception:
-                    result = ''
-
-            # Log a brief summary
-            preview = result.strip()[:80]
-            logging.info(f"Extracted {len(result.strip())} chars from DOC '{file_path}'" + (f": {preview}..." if preview else ""))
-            return result
-        except ImportError:
-            logging.error("pywin32 is required to process .doc files on Windows. Please install 'pywin32'.")
-            # Try non-COM fallbacks
-            fallback_text = self._extract_doc_with_fallbacks(file_path)
-            return fallback_text or ""
-        except Exception as e:
-            err_msg = str(e)
-            logging.error(f"Error processing DOC {file_path}: {err_msg}")
-            # COM failure like Class not registered (-2147221164) or Word not installed
-            if 'Class not registered' in err_msg or '-2147221164' in err_msg or 'Invalid class string' in err_msg:
-                logging.warning("Microsoft Word COM automation not available. Attempting fallback conversion methods (LibreOffice/antiword).")
-                fallback_text = self._extract_doc_with_fallbacks(file_path)
-                return fallback_text or ""
-            else:
-                # Generic error -> still try fallbacks as a safety net
-                fallback_text = self._extract_doc_with_fallbacks(file_path)
-                return fallback_text or ""
-        finally:
-            # Ensure resources are released even on errors
-            try:
-                if doc is not None:
-                    doc.Close(False)
-            except Exception:
-                pass
-            try:
-                if word is not None:
-                    word.Quit()
-            except Exception:
-                pass
-
-    def _extract_doc_with_fallbacks(self, file_path):
-        """Attempt to extract text from .doc using external tools when COM/Word isn't available.
-
-        Order:
-        1) LibreOffice (soffice) convert-to txt
-        2) LibreOffice convert-to docx then parse with python-docx
-        3) antiword utility (if installed)
-        Returns extracted text or empty string.
+        Priority order:
+        1) antiword (fast, simple)
+        2) LibreOffice headless convert-to TXT
+        3) LibreOffice headless convert-to DOCX then parse with python-docx
         """
-        # 1) Try LibreOffice to TXT
-        text = self._doc_to_txt_with_libreoffice(file_path)
-        if text and text.strip():
-            return text
+        logging.info(f"Processing DOC using external tools (antiword/LibreOffice): {file_path}")
 
-        # 2) Try LibreOffice to DOCX -> parse
-        text = self._doc_to_docx_with_libreoffice_then_parse(file_path)
-        if text and text.strip():
-            return text
-
-        # 3) Try antiword utility
+        # 1) antiword primary
         text = self._doc_with_antiword(file_path)
         if text and text.strip():
             return text
 
-        # Provide helpful guidance
-        logging.warning(
-            "Could not extract text from .doc using fallbacks. To enable robust .doc processing, install LibreOffice and set LIBREOFFICE_PATH to soffice.exe, or install 'antiword' and add it to PATH."
-        )
+        # 2) LibreOffice -> TXT
+        text = self._doc_to_txt_with_libreoffice(file_path)
+        if text and text.strip():
+            return text
+
+        # 3) LibreOffice -> DOCX -> parse
+        text = self._doc_to_docx_with_libreoffice_then_parse(file_path)
+        if text and text.strip():
+            return text
+
+        logging.warning("All .doc extraction methods failed (antiword/LibreOffice). Returning empty text.")
         return ""
+
+    def _extract_doc_with_fallbacks(self, file_path):
+        """Deprecated: legacy fallback chain retained for compatibility.
+
+        New primary flow is in _extract_text_from_doc (antiword -> LibreOffice TXT -> LibreOffice DOCX).
+        """
+        return self._extract_text_from_doc(file_path)
 
     def _doc_to_txt_with_libreoffice(self, file_path):
         """Use LibreOffice headless conversion to produce a plain text file."""
@@ -586,12 +503,12 @@ class DocumentProcessor:
 
 Please be thorough in extracting text - include headers, body text, captions, and any other readable content."""
 
-                    # Use the configured vision model to analyze the image
-                    response = self.llm_analyzer.vision_llm.invoke(prompt, images=[temp_image_path])
+                    # Use the configured vision model to analyze the image with robust fallback
+                    response_text = self.llm_analyzer.analyze_image_text(temp_image_path, prompt)
                     
-                    if response and response.strip():
-                        all_text += f"[Page {i+1} Vision Analysis]\n{response.strip()}\n\n"
-                        logging.info(f"Vision LLM extracted text from page {i+1}: {len(response.strip())} characters")
+                    if response_text and response_text.strip():
+                        all_text += f"[Page {i+1} Vision Analysis]\n{response_text.strip()}\n\n"
+                        logging.info(f"Vision LLM extracted text from page {i+1}: {len(response_text.strip())} characters")
                     
                     # Clean up temporary file
                     try:
@@ -631,12 +548,12 @@ Please be thorough in extracting text - include headers, body text, captions, an
 
 Please be thorough in extracting text - include any headers, body text, captions, labels, and any other readable content, no matter how small or stylized."""
 
-            # Use the configured vision model to analyze the image
-            response = self.llm_analyzer.vision_llm.invoke(prompt, images=[str(file_path)])
+            # Use the configured vision model via analyzer helper (with fallback)
+            response_text = self.llm_analyzer.analyze_image_text(str(file_path), prompt)
             
-            if response and response.strip():
-                logging.info(f"Vision LLM extracted text from image {file_path}: {len(response.strip())} characters")
-                return f"[Vision LLM Analysis]\n{response.strip()}"
+            if response_text and response_text.strip():
+                logging.info(f"Vision LLM extracted text from image {file_path}: {len(response_text.strip())} characters")
+                return f"[Vision LLM Analysis]\n{response_text.strip()}"
             else:
                 logging.warning(f"Vision LLM analysis completed but no text extracted from {file_path}")
                 return ""

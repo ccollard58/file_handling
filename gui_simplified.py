@@ -544,11 +544,21 @@ class FileOrganizerGUI(QMainWindow):
         
         splitter.addWidget(folder_panel)
         
-        # Step 3: Results Panel
+        # Step 3: Results Panel with vertical splitter for resizing
         results_panel = QWidget()
-        results_layout = QVBoxLayout(results_panel)
+        results_main_layout = QVBoxLayout(results_panel)
+        results_main_layout.setContentsMargins(5, 5, 5, 5)
         
-        results_layout.addWidget(QLabel("Analysis Results"))
+        # Add header label
+        results_main_layout.addWidget(QLabel("Analysis Results"))
+        
+        # Create vertical splitter for results table and preview
+        results_splitter = QSplitter(Qt.Orientation.Vertical)
+        
+        # Upper section: File list and controls
+        upper_widget = QWidget()
+        upper_layout = QVBoxLayout(upper_widget)
+        upper_layout.setContentsMargins(0, 0, 0, 0)
         
         # File list view for results
         self.file_view = QTreeView()
@@ -574,7 +584,7 @@ class FileOrganizerGUI(QMainWindow):
         self.file_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.file_view.customContextMenuRequested.connect(self.show_context_menu)
         
-        results_layout.addWidget(self.file_view)
+        upper_layout.addWidget(self.file_view)
         
         # Add progress bar for non-modal analysis progress
         progress_widget = QWidget()
@@ -605,7 +615,7 @@ class FileOrganizerGUI(QMainWindow):
         
         progress_widget.setVisible(False)
         self.progress_widget = progress_widget  # Store reference to show/hide entire progress area
-        results_layout.addWidget(progress_widget)
+        upper_layout.addWidget(progress_widget)
         
         # Process controls
         process_layout = QHBoxLayout()
@@ -634,9 +644,12 @@ class FileOrganizerGUI(QMainWindow):
         self.undo_all_btn.clicked.connect(self.undo_all_actions_gui)
         process_layout.addWidget(self.undo_all_btn)
         
-        results_layout.addLayout(process_layout)
+        upper_layout.addLayout(process_layout)
         
-        # Add preview panel
+        # Add upper widget to splitter
+        results_splitter.addWidget(upper_widget)
+        
+        # Lower section: Preview panel
         preview_group = QGroupBox("File Preview")
         preview_layout = QVBoxLayout(preview_group)
         
@@ -655,7 +668,14 @@ class FileOrganizerGUI(QMainWindow):
         self.preview_text.setText("Select a file to see preview.")
         preview_layout.addWidget(self.preview_text)
         
-        results_layout.addWidget(preview_group)
+        # Add preview panel to splitter
+        results_splitter.addWidget(preview_group)
+        
+        # Set initial splitter proportions (results table larger than preview)
+        results_splitter.setSizes([400, 200])  # Adjust these values as needed
+        
+        # Add the vertical splitter to the main results layout
+        results_main_layout.addWidget(results_splitter)
         
         splitter.addWidget(results_panel)
         

@@ -767,9 +767,9 @@ class LLMAnalyzer:
             - "SysAdmin": Documents related to software, network configurations, and technical instructions, including Software licenses, user manuals, and tech warranties. Examples: Software Licenses, Hardware Specifications, Appliance Manuals, Product Warranties, Network Configuration Diagram, Technical Error Report
             - "School": Degrees, transcripts, and academic records. Examples: Degree Certificates, Transcripts, Course Materials, Student Loans Documents, FranklinCovey Training Notes
             - "Cooking": Collection of recipes, cookbooks, meal plans and related culinary information. Examples: Apple Raisin Crisp Recipe, Cooking Recipes, Meal Plans, Diet Guides
-            - "Financial": Documents related to income, expenses, investments, and taxes. Examples: W-2s, Wills, Tax Documents, Bank Statements, Pay Stubs, Investment Records
+            - "Financial": Documents related to income, expenses, investments, and taxes. Examples: W-2s, Wills, Tax Documents, Bank Statements, Investment Records (NOTE: Pay stubs should be categorized as Employment, not Financial)
             - "Travel": Documents related to trips, vacations, and recreational activities. Examples: Travel Itineraries, Boarding Passes, Hotel Confirmation, Tourism Information, Trip Insurance
-            - "Employment": Documents related to employment history, benefits, and income. Examples: Pay Stubs, Employment Contracts, Benefits Forms, Performance Reviews
+            - "Employment": Documents related to employment history, benefits, and income from work. Examples: Pay Stubs, Employment Contracts, Benefits Forms, Performance Reviews (NOTE: This is the correct category for paystubs and earnings statements)
             - "Hobbies": Documents related to personal hobbies and interests. Examples: DIY Guides, Craft Patterns, Art Supply Inventories, Media Releases, Copyright Registrations
             - "Memories": Documents that capture a fond memory. Examples: Letters, Notes, Theater Ticket Stubs, Photographs
             - "Other": Documents that don't fit neatly into other categories, or are unclear in purpose. Examples: Chinese Text Document, Abstract colorful image, Franklin Institute Color Codes, Roadside Attraction Sign.
@@ -838,46 +838,105 @@ class LLMAnalyzer:
         text_lower = text.lower()
         filename_lower = filename.lower()
         
+        # First, check for exclusions - documents that are definitely NOT paystubs
+        exclusion_patterns = [
+            # Tax documents
+            'tax document', 'tax return', '1040', 'w-2', 'w2', 'form 1099', '1099',
+            'schedule a', 'schedule b', 'schedule c', 'schedule d', 'schedule e',
+            'tax preparation', 'tax filing', 'irs', 'internal revenue',
+            
+            # Receipts and invoices
+            'receipt', 'invoice', 'bill', 'purchase', 'sale', 'transaction',
+            'store receipt', 'credit card', 'debit card', 'payment receipt',
+            'tire', 'tires', 'bmw', 'auto repair', 'service receipt',
+            
+            # Bank and financial statements
+            'bank statement', 'account statement', 'monthly statement',
+            'credit statement', 'loan statement', 'mortgage statement',
+            'investment statement', 'brokerage statement',
+            
+            # Other financial documents
+            'insurance policy', 'insurance claim', 'insurance premium',
+            'property tax', 'real estate', 'deed', 'title',
+            'will', 'estate', 'trust', 'beneficiary'
+        ]
+        
+        # Check if this document matches exclusion patterns
+        for pattern in exclusion_patterns:
+            if pattern in text_lower or pattern in filename_lower:
+                logging.info(f"Document excluded from paystub detection via pattern: {pattern}")
+                return False
+        
         # Paystub keywords that strongly indicate this is a paystub
         paystub_keywords = [
             'pay stub', 'paystub', 'payroll stub', 'earnings statement',
             'salary statement', 'wage statement', 'pay statement',
-            'payroll statement', 'earnings and deductions'
+            'payroll statement', 'earnings and deductions statement'
         ]
         
-        # Additional indicators (need multiple for confirmation)
-        paystub_indicators = [
-            'gross pay', 'net pay', 'deductions', 'federal tax', 'fed inc tax',
-            'state tax', 'fica', 'medicare', 'social security', 'so sec tax',
-            'year to date', 'ytd', 'current period', 'pay period', 'bi-weekly',
-            'hourly rate', 'hours worked', 'overtime', 'regular hours', 'regular',
-            'direct deposit', 'pay date', 'check number', 'check no',
-            'current net pay', 'total current net pay', 'pretax', 'after-tax',
-            'earnings', 'hours and earnings', 'taxes and deductions',
-            'total taxes', 'total h/e', 'pay frequency', 'period ending'
-        ]
-        
-        # Check for paystub keywords in text or filename
+        # Check for explicit paystub keywords in text or filename
         for keyword in paystub_keywords:
             if keyword in text_lower or keyword in filename_lower:
-                logging.info(f"Paystub detected via keyword: {keyword}")
+                logging.info(f"Paystub detected via explicit keyword: {keyword}")
                 return True
         
-        # Check for multiple indicators (need at least 3)
-        indicator_count = sum(1 for indicator in paystub_indicators 
-                             if indicator in text_lower or indicator in filename_lower)
+        # Core paystub indicators that are specific to paystubs
+        # These are terms that typically appear together on paystubs but not on other documents
+        core_paystub_indicators = [
+            'gross pay', 'net pay', 'current net pay', 'total current net pay',
+            'pay period', 'bi-weekly', 'pay frequency', 'period ending',
+            'hours worked', 'regular hours', 'overtime hours',
+            'hourly rate', 'salary rate', 'current earnings', 'ytd earnings',
+            'direct deposit', 'pay date', 'payroll date',
+            'employee id', 'employee number', 'emp id', 'emp no'
+        ]
         
-        if indicator_count >= 3:
-            logging.info(f"Paystub detected via {indicator_count} indicators")
+        # Paystub-specific deduction indicators
+        paystub_deduction_indicators = [
+            'pretax deductions', 'after-tax deductions', 'voluntary deductions',
+            'health insurance deduction', 'dental insurance deduction',
+            '401k deduction', 'retirement deduction', 'pension deduction',
+            'life insurance deduction', 'disability deduction'
+        ]
+        
+        # Tax withholding indicators (more specific to paystubs)
+        paystub_tax_indicators = [
+            'fed withholding', 'federal withholding', 'fed inc tax withheld',
+            'state withholding', 'state inc tax withheld', 'fica withheld',
+            'medicare withheld', 'so sec withheld', 'social security withheld',
+            'tax withholdings', 'payroll taxes'
+        ]
+        
+        # Count indicators by category
+        core_count = sum(1 for indicator in core_paystub_indicators 
+                        if indicator in text_lower)
+        deduction_count = sum(1 for indicator in paystub_deduction_indicators 
+                             if indicator in text_lower)
+        tax_count = sum(1 for indicator in paystub_tax_indicators 
+                       if indicator in text_lower)
+        
+        # More restrictive criteria: need strong evidence across multiple categories
+        total_indicators = core_count + deduction_count + tax_count
+        
+        # Require at least 2 core indicators AND (1 deduction OR 1 tax indicator)
+        if core_count >= 2 and (deduction_count >= 1 or tax_count >= 1):
+            logging.info(f"Paystub detected via strong indicators: core={core_count}, deductions={deduction_count}, taxes={tax_count}")
+            return True
+        
+        # Alternative: if we have many total indicators (5+), it's likely a paystub
+        # But only if we have at least 1 core indicator
+        if total_indicators >= 5 and core_count >= 1:
+            logging.info(f"Paystub detected via high indicator count: total={total_indicators}, core={core_count}")
             return True
         
         # Special case: if filename starts with A followed by numbers (your paystub naming pattern)
-        # and contains paystub-like financial terms
+        # and contains specific paystub terms (not just any financial terms)
         if (re.match(r'^A\d+\.pdf$', filename, re.IGNORECASE) and 
-            any(term in text_lower for term in ['net pay', 'earnings', 'taxes', 'deductions', 'ytd'])):
-            logging.info(f"Paystub detected via filename pattern and financial terms: {filename}")
+            any(term in text_lower for term in ['net pay', 'gross pay', 'pay period', 'hours worked', 'payroll'])):
+            logging.info(f"Paystub detected via filename pattern and specific paystub terms: {filename}")
             return True
             
+        logging.debug(f"Document not classified as paystub: core={core_count}, deductions={deduction_count}, taxes={tax_count}")
         return False
     
     def _analyze_paystub_content(self, text, filename):

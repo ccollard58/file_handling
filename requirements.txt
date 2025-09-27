@@ -24,3 +24,4 @@ python-Levenshtein
 evaluate
 PyMuPDF
 psutil
+scikit-learn

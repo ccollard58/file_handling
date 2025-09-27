@@ -181,8 +181,9 @@ class LLMAnalyzer:
             ]
             # Some models can be used both as text and vision; include them in BOTH lists
             dual_keywords = [
-                'gemma3n',  # gemma3n variants can be text+vision
-                'gemma3',   # gemma3 family (treat as dual-use by default)
+                'gemma3n',   # gemma3n variants can be text+vision
+                'gemma3',    # gemma3 family (treat as dual-use by default)
+                'llama4',    # Treat llama4 family as dual-use (text + vision). Some variants are multimodal but still valid text models.
             ]
             text_models = []
             
@@ -232,6 +233,7 @@ class LLMAnalyzer:
             dual_keywords = [
                 'gemma3n',
                 'gemma3',
+                'llama4',   # Include llama4 family as dual-use (appears in both text and vision lists)
             ]
             vision_models = []
             

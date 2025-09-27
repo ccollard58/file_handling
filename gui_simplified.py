@@ -266,18 +266,23 @@ class FileFinderThread(QThread):
         self.abort = True
 
 class FileAnalysisThread(QThread):
-    """Thread to analyze files in background without freezing the UI"""
+    """Thread to analyze files in background without freezing the UI.
+
+    Adds support for emitting the original folder (relative to source root if provided)
+    so the results pane can display where each analyzed file came from.
+    """
     file_analyzed = pyqtSignal(dict)  # Emits analysis data for each file
     progress_updated = pyqtSignal(int, str)  # Progress value and current file
     analysis_finished = pyqtSignal()
     analysis_error = pyqtSignal(str, str)  # file_path, error_message
     
-    def __init__(self, file_list, document_processor, llm_analyzer, file_handler):
+    def __init__(self, file_list, document_processor, llm_analyzer, file_handler, source_root=None):
         super().__init__()
         self.file_list = file_list
         self.document_processor = document_processor
         self.llm_analyzer = llm_analyzer
         self.file_handler = file_handler
+        self.source_root = source_root
         self.abort = False
     
     def run(self):
@@ -313,8 +318,21 @@ class FileAnalysisThread(QThread):
                 destination_path = self.file_handler.get_destination_path(analysis_result)
                 
                 # Store analysis result
+                # Derive original folder (relative to source root if possible)
+                original_dir_abs = os.path.dirname(file_path)
+                original_folder = original_dir_abs
+                if self.source_root:
+                    try:
+                        original_folder_rel = os.path.relpath(original_dir_abs, self.source_root)
+                        # Use empty string for root itself for a cleaner display
+                        original_folder = "" if original_folder_rel == "." else original_folder_rel
+                    except ValueError:
+                        # Different drive on Windows; fall back to absolute
+                        original_folder = original_dir_abs
+
                 analysis_data = {
                     'original_path': file_path,
+                    'original_folder': original_folder,
                     'new_filename': new_filename,
                     'destination_folder': os.path.relpath(destination_path, self.file_handler.base_output_dir),
                     'identity': analysis_result['identity'],
@@ -564,7 +582,7 @@ class FileOrganizerGUI(QMainWindow):
         self.file_view = QTreeView()
         self.file_model = QStandardItemModel()
         self.file_model.setHorizontalHeaderLabels([
-            "✓", "Original Filename", "New Filename", "Destination Folder", 
+            "✓", "Original Filename", "Original Folder", "New Filename", "Destination Folder", 
             "Identity", "Date", "Description"
         ])
         # Sortable proxy model
@@ -1275,7 +1293,7 @@ class FileOrganizerGUI(QMainWindow):
         # Clear previous results
         self.file_model.clear()
         self.file_model.setHorizontalHeaderLabels([
-            "✓", "Original Filename", "New Filename", "Destination Folder", 
+            "✓", "Original Filename", "Original Folder", "New Filename", "Destination Folder", 
             "Identity", "Date", "Description"
         ])
         self.analyzed_files = []
@@ -1320,10 +1338,11 @@ class FileOrganizerGUI(QMainWindow):
         
         # Create and start analysis thread
         self.analysis_thread = FileAnalysisThread(
-            file_list, 
-            self.document_processor, 
-            self.llm_analyzer, 
-            self.file_handler
+            file_list,
+            self.document_processor,
+            self.llm_analyzer,
+            self.file_handler,
+            source_root=self.current_folder
         )
         
         # Connect thread signals
@@ -1584,34 +1603,37 @@ class FileOrganizerGUI(QMainWindow):
             self.preview_text.setText(f"No preview available for {file_ext} files.")
     
     def add_file_to_model(self, analysis_data):
-        """Add a file analysis result to the model"""
+        """Add a file analysis result to the model including original folder."""
         row = []
-        
+
         # Checkbox
         checkbox_item = QStandardItem()
         checkbox_item.setCheckable(True)
         checkbox_item.setCheckState(Qt.CheckState.Checked)
         row.append(checkbox_item)
-        
+
         # Original filename
         original_name = os.path.basename(analysis_data['original_path'])
         row.append(QStandardItem(original_name))
-        
+
+        # Original folder (may be empty string if root)
+        row.append(QStandardItem(analysis_data.get('original_folder', '')))
+
         # New filename
         row.append(QStandardItem(analysis_data['new_filename']))
-        
+
         # Destination folder
         row.append(QStandardItem(analysis_data['destination_folder']))
-        
+
         # Identity
         row.append(QStandardItem(analysis_data['identity']))
-        
+
         # Date
         row.append(QStandardItem(analysis_data['date']))
-        
+
         # Description
         row.append(QStandardItem(analysis_data['description']))
-        
+
         self.file_model.appendRow(row)
     
     def show_context_menu(self, position):
@@ -1650,7 +1672,7 @@ class FileOrganizerGUI(QMainWindow):
         
         # Determine what we're editing for better dialog labels
         column = source_index.column()
-        column_names = ["", "Original Filename", "New Filename", "Destination Folder", "Identity", "Date", "Description"]
+        column_names = ["", "Original Filename", "Original Folder", "New Filename", "Destination Folder", "Identity", "Date", "Description"]
         if column < len(column_names):
             field_name = column_names[column]
         else:
@@ -1671,15 +1693,17 @@ class FileOrganizerGUI(QMainWindow):
             row = source_index.row()
             
             if row < len(self.analyzed_files):                
-                if column == 2:  # New filename
+                if column == 2:  # Original folder
+                    self.analyzed_files[row]['original_folder'] = new_text
+                elif column == 3:  # New filename
                     self.analyzed_files[row]['new_filename'] = new_text
-                elif column == 3:  # Destination folder
+                elif column == 4:  # Destination folder
                     self.analyzed_files[row]['destination_folder'] = new_text
-                elif column == 4:  # Identity
+                elif column == 5:  # Identity
                     self.analyzed_files[row]['identity'] = new_text
-                elif column == 5:  # Date
+                elif column == 6:  # Date
                     self.analyzed_files[row]['date'] = new_text
-                elif column == 6:  # Description
+                elif column == 7:  # Description
                     self.analyzed_files[row]['description'] = new_text
 
     def select_all_files(self):
@@ -1706,11 +1730,14 @@ class FileOrganizerGUI(QMainWindow):
             if checkbox_state == Qt.CheckState.Checked:
                 if row < len(self.analyzed_files):
                     # Get updated values from the model
-                    new_filename_item = self.file_model.item(row, 2)
-                    destination_folder_item = self.file_model.item(row, 3)
-                    identity_item = self.file_model.item(row, 4)
-                    date_item = self.file_model.item(row, 5)
-                    description_item = self.file_model.item(row, 6)
+                    # Column mapping after adding Original Folder column:
+                    # 0: checkbox, 1: Original Filename, 2: Original Folder, 3: New Filename,
+                    # 4: Destination Folder, 5: Identity, 6: Date, 7: Description
+                    new_filename_item = self.file_model.item(row, 3)
+                    destination_folder_item = self.file_model.item(row, 4)
+                    identity_item = self.file_model.item(row, 5)
+                    date_item = self.file_model.item(row, 6)
+                    description_item = self.file_model.item(row, 7)
 
                     new_filename = new_filename_item.text() if new_filename_item else ""
                     destination_folder = destination_folder_item.text() if destination_folder_item else ""
@@ -1993,12 +2020,13 @@ class FileOrganizerGUI(QMainWindow):
             # Fixed width for column 0 (checkbox)
             fixed_col0 = 40
 
-            # Weights for columns 1..6 with a bias towards Description (index 6)
-            weights = [1.2, 1.2, 1.2, 0.8, 0.8, 2.4]
+            # Weights for columns 1..7 (after adding Original Folder) with a bias towards Description (index 7)
+            # Columns: 1 Original Filename, 2 Original Folder, 3 New Filename, 4 Destination Folder, 5 Identity, 6 Date, 7 Description
+            weights = [1.1, 1.0, 1.1, 1.0, 0.8, 0.8, 2.2]
             weight_sum = sum(weights)
 
-            # Minimum widths ensure usability on small windows
-            min_widths = [150, 180, 180, 120, 120, 260]
+            # Minimum widths ensure usability on small windows (aligned with weights list)
+            min_widths = [150, 140, 170, 170, 110, 110, 260]
 
             # Account for scrollbar width and padding
             scrollbar_width = 20  # Estimate for vertical scrollbar
@@ -2012,7 +2040,7 @@ class FileOrganizerGUI(QMainWindow):
                 # Give the leftover space to Description
                 widths[-1] += (available - total_assigned)
 
-            # Apply the sizes to sections 1..6
+            # Apply the sizes to sections 1..7
             for i, w in enumerate(widths, start=1):
                 header.resizeSection(i, w)
                 

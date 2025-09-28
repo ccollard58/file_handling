@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import logging
+import atexit
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                            QTreeView, QFileDialog, QCheckBox, QComboBox,
@@ -10,6 +11,261 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect, QObject, QDateTime, QSortFilterProxyModel, QUrl
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter, QFont, QFontMetrics, QDesktopServices
 from PyQt6.QtPdf import QPdfDocument
+from PyQt6.QtWidgets import QScrollArea, QSlider
+
+
+class ClickableLabel(QLabel):
+    """A QLabel that emits a signal when double-clicked (for opening full preview)."""
+    double_clicked = pyqtSignal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802 (Qt overridden method)
+        try:
+            self.double_clicked.emit()
+        finally:
+            super().mouseDoubleClickEvent(event)
+
+
+class FullPreviewDialog(QDialog):
+    """Dialog to show a full-sized preview of a file with zoom and navigation.
+
+    Supports:
+      - Images (common raster formats)
+      - PDFs (page navigation + zoom)
+      - Other analyzed documents (shows extracted text if available)
+    """
+
+    def __init__(self, parent, file_path: str, extracted_text: str | None = None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Full Preview - {os.path.basename(file_path)}")
+        self.file_path = file_path
+        self.extracted_text = extracted_text or ""
+        self._scale = 1.0
+        self._min_scale = 0.1
+        self._max_scale = 4.0
+        self._pdf_doc: QPdfDocument | None = None
+        self._current_page = 0
+
+        layout = QVBoxLayout(self)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        self.zoom_in_btn = QPushButton("+")
+        self.zoom_out_btn = QPushButton("–")
+        self.actual_size_btn = QPushButton("1:1")
+        self.fit_width_btn = QPushButton("Fit")
+        self.prev_page_btn = QPushButton("◀ Prev")
+        self.next_page_btn = QPushButton("Next ▶")
+        self.page_label = QLabel("")
+        self.open_external_btn = QPushButton("Open Externally")
+
+        for w in [self.zoom_out_btn, self.zoom_in_btn, self.actual_size_btn, self.fit_width_btn,
+                  self.prev_page_btn, self.next_page_btn, self.open_external_btn]:
+            w.setEnabled(False)  # Enable selectively later
+
+        toolbar.addWidget(self.zoom_out_btn)
+        toolbar.addWidget(self.zoom_in_btn)
+        toolbar.addWidget(self.actual_size_btn)
+        toolbar.addWidget(self.fit_width_btn)
+        toolbar.addSpacing(20)
+        toolbar.addWidget(self.prev_page_btn)
+        toolbar.addWidget(self.next_page_btn)
+        toolbar.addWidget(self.page_label)
+        toolbar.addStretch()
+        toolbar.addWidget(self.open_external_btn)
+        layout.addLayout(toolbar)
+
+        # Scroll area for visual content
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.scroll_area.setWidget(self.image_label)
+        layout.addWidget(self.scroll_area, 1)
+
+        # Text area for extracted text (hidden unless needed or toggled for PDFs)
+        self.text_area = QTextEdit()
+        self.text_area.setReadOnly(True)
+        self.text_area.setVisible(False)
+        layout.addWidget(self.text_area, 0)
+
+        # Connect controls
+        self.zoom_in_btn.clicked.connect(lambda: self._change_scale(1.25))
+        self.zoom_out_btn.clicked.connect(lambda: self._change_scale(0.8))
+        self.actual_size_btn.clicked.connect(self._reset_scale)
+        self.fit_width_btn.clicked.connect(self._fit_width)
+        self.prev_page_btn.clicked.connect(self._prev_page)
+        self.next_page_btn.clicked.connect(self._next_page)
+        self.open_external_btn.clicked.connect(self._open_external)
+
+        self._load_file()
+        self.resize(1000, 800)
+
+    # ---------------- File Type Handling -----------------
+    def _load_file(self):
+        ext = os.path.splitext(self.file_path)[1].lower()
+        if ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif']:
+            self._load_image()
+        elif ext == '.pdf':
+            self._load_pdf()
+        else:
+            self._load_text_fallback()
+
+    def _load_image(self):
+        pix = QPixmap(self.file_path)
+        if pix.isNull():
+            self.image_label.setText("Failed to load image.")
+            return
+        self._original_pixmap = pix
+        self.image_label.setPixmap(pix)
+        for btn in [self.zoom_in_btn, self.zoom_out_btn, self.actual_size_btn, self.fit_width_btn, self.open_external_btn]:
+            btn.setEnabled(True)
+        if self.extracted_text:
+            self.text_area.setPlainText(self.extracted_text[:20000])
+            self.text_area.setVisible(True)
+
+    def _load_pdf(self):
+        self._pdf_doc = QPdfDocument(self)
+        try:
+            load_result = self._pdf_doc.load(self.file_path)
+        except Exception as e:
+            self.image_label.setText(f"Failed to load PDF (exception): {e}")
+            return
+
+        # Qt versions may return Status OR an int; normalize
+        try:
+            current_status = self._pdf_doc.status()
+        except Exception:
+            current_status = load_result
+
+        if current_status == QPdfDocument.Status.Loading:
+            # Defer until ready by polling briefly (simple approach)
+            from PyQt6.QtCore import QTimer
+            def _finish_when_ready(attempt=0):
+                st = self._pdf_doc.status()
+                if st == QPdfDocument.Status.Ready:
+                    self._finalize_pdf_load()
+                elif st in (QPdfDocument.Status.Error, QPdfDocument.Status.Unknown):
+                    self._handle_pdf_error(st)
+                elif attempt < 20:  # up to ~2 seconds (20 * 100ms)
+                    QTimer.singleShot(100, lambda: _finish_when_ready(attempt + 1))
+                else:
+                    self._handle_pdf_error(st)
+            _finish_when_ready()
+        elif current_status == QPdfDocument.Status.Ready:
+            self._finalize_pdf_load()
+        else:
+            self._handle_pdf_error(current_status)
+
+    def _finalize_pdf_load(self):
+        if not self._pdf_doc or self._pdf_doc.pageCount() <= 0:
+            self.image_label.setText("PDF has no pages or failed to render.")
+            return
+        self._current_page = 0
+        self._render_pdf_page()
+        for btn in [self.zoom_in_btn, self.zoom_out_btn, self.actual_size_btn, self.fit_width_btn,
+                    self.prev_page_btn, self.next_page_btn, self.open_external_btn]:
+            btn.setEnabled(True)
+        self._update_page_label()
+        if self.extracted_text:
+            self.text_area.setPlainText(self.extracted_text[:20000])
+            self.text_area.setVisible(True)
+
+    def _handle_pdf_error(self, status):
+        # Map status to diagnostic message
+        status_name = getattr(status, 'name', str(status))
+        hint = ""
+        # Provide helpful hints
+        if self._pdf_doc and self._pdf_doc.pageCount() == 0:
+            hint = "File may be encrypted, corrupted, or the Qt PDF plugin is missing."
+        if 'Error' in status_name or status_name == str(QPdfDocument.Status.Error):
+            hint = hint or "Generic PDF error. Try opening externally."
+        msg = f"Failed to load PDF (status={status_name}). {hint}"
+        self.image_label.setText(msg)
+        # Enable external open so user can still view
+        self.open_external_btn.setEnabled(True)
+
+    def _load_text_fallback(self):
+        self.scroll_area.setVisible(False)
+        self.text_area.setVisible(True)
+        header = f"No visual preview available for: {os.path.basename(self.file_path)}\n\n"
+        content = self.extracted_text or "(No extracted text available)"
+        self.text_area.setPlainText(header + content[:50000])
+        self.open_external_btn.setEnabled(True)
+
+    # ---------------- Image/PDF Rendering Helpers -----------------
+    def _change_scale(self, factor: float):
+        new_scale = max(self._min_scale, min(self._max_scale, self._scale * factor))
+        if abs(new_scale - self._scale) < 1e-4:
+            return
+        self._scale = new_scale
+        self._rerender()
+
+    def _reset_scale(self):
+        self._scale = 1.0
+        self._rerender()
+
+    def _fit_width(self):
+        # Fit content width to scroll area viewport width
+        if self._pdf_doc:
+            size = self._pdf_doc.pagePointSize(self._current_page)
+            if size.width() > 0:
+                viewport_w = max(1, self.scroll_area.viewport().width() - 20)
+                self._scale = max(self._min_scale, min(self._max_scale, viewport_w / size.width()))
+        elif hasattr(self, '_original_pixmap'):
+            pix = self._original_pixmap
+            if not pix.isNull():
+                viewport_w = max(1, self.scroll_area.viewport().width() - 20)
+                self._scale = max(self._min_scale, min(self._max_scale, viewport_w / pix.width()))
+        self._rerender()
+
+    def _prev_page(self):
+        if self._pdf_doc and self._current_page > 0:
+            self._current_page -= 1
+            self._render_pdf_page()
+            self._update_page_label()
+
+    def _next_page(self):
+        if self._pdf_doc and self._current_page < self._pdf_doc.pageCount() - 1:
+            self._current_page += 1
+            self._render_pdf_page()
+            self._update_page_label()
+
+    def _render_pdf_page(self):
+        if not self._pdf_doc:
+            return
+        page_size = self._pdf_doc.pagePointSize(self._current_page)
+        target_size = QSize(int(page_size.width() * self._scale), int(page_size.height() * self._scale))
+        image = self._pdf_doc.render(self._current_page, target_size)
+        self.image_label.setPixmap(QPixmap.fromImage(image))
+
+    def _rerender(self):
+        if self._pdf_doc:
+            self._render_pdf_page()
+        elif hasattr(self, '_original_pixmap'):
+            pix = self._original_pixmap
+            if not pix.isNull():
+                scaled = pix.scaled(int(pix.width() * self._scale), int(pix.height() * self._scale),
+                                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.image_label.setPixmap(scaled)
+
+    def _update_page_label(self):
+        if self._pdf_doc:
+            self.page_label.setText(f"Page {self._current_page + 1} / {self._pdf_doc.pageCount()}")
+        else:
+            self.page_label.setText("")
+
+    def _open_external(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(self.file_path))
+
+    def closeEvent(self, event):  # noqa: N802
+        try:
+            if self._pdf_doc:
+                self._pdf_doc.close()
+        finally:
+            super().closeEvent(event)
 
 class QtLogHandler(logging.Handler, QObject):
     """Custom logging handler that emits Qt signals for real-time log display"""
@@ -406,6 +662,17 @@ class FileOrganizerGUI(QMainWindow):
         # Add the handler to the root logger
         root_logger = logging.getLogger()
         root_logger.addHandler(self.qt_log_handler)
+
+        # Ensure handler is removed at process exit to prevent QObject deleted warnings
+        handler_ref = self.qt_log_handler
+        def _cleanup_logging_handler():
+            try:
+                rl = logging.getLogger()
+                if handler_ref in rl.handlers:
+                    rl.removeHandler(handler_ref)
+            except Exception:
+                pass
+        atexit.register(_cleanup_logging_handler)
         
         # Set the level for our handler from config or default to INFO
         log_level_str = self.config.get("log_level", "INFO")
@@ -680,13 +947,18 @@ class FileOrganizerGUI(QMainWindow):
         preview_group = QGroupBox("File Preview")
         preview_layout = QVBoxLayout(preview_group)
         
-        # Image preview label
-        self.preview_image_label = QLabel()
+        # Image preview label (thumbnail) - make it clickable for full preview
+        self.preview_image_label = ClickableLabel()
         self.preview_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # Reserve only thumbnail dimensions to minimize empty space
         self.preview_image_label.setFixedSize(100, 100)
         self.preview_image_label.setVisible(False)
         preview_layout.addWidget(self.preview_image_label)
+
+        # Track last previewed file path for full-size dialog
+        self._last_preview_file = None
+        self.preview_image_label.double_clicked.connect(self.open_full_preview_from_thumbnail)
+        self.preview_image_label.setToolTip("Double-click to open full-size preview")
         
         # Text preview area
         self.preview_text = QTextEdit()
@@ -1498,6 +1770,8 @@ class FileOrganizerGUI(QMainWindow):
             self.preview_text.setText(f"File not found: {file_path}")
             self.preview_image_label.setVisible(False)
             return
+        # Store last previewed file for full-size preview feature
+        self._last_preview_file = file_path
         
         # Try to get extracted text from analysis data first
         extracted_text = self.get_extracted_text_for_file(file_path)
@@ -1610,6 +1884,18 @@ class FileOrganizerGUI(QMainWindow):
         else:
             self.preview_image_label.setVisible(False)
             self.preview_text.setText(f"No preview available for {file_ext} files.")
+
+    def open_full_preview_from_thumbnail(self):
+        """Open the full-size preview dialog when the thumbnail is double-clicked."""
+        try:
+            if not self._last_preview_file or not os.path.exists(self._last_preview_file):
+                QMessageBox.information(self, "No File", "No file is currently selected for preview.")
+                return
+            extracted_text = self.get_extracted_text_for_file(self._last_preview_file)
+            dlg = FullPreviewDialog(self, self._last_preview_file, extracted_text)
+            dlg.exec()
+        except Exception as e:
+            logging.error(f"Failed to open full preview: {e}")
     
     def add_file_to_model(self, analysis_data):
         """Add a file analysis result to the model including original folder."""

@@ -348,7 +348,7 @@ class FileAnalysisThread(QThread):
             except Exception as e:
                 self.analysis_error.emit(file_path, str(e))
                 continue
-        
+
         # Signal completion
         self.analysis_finished.emit()
     
@@ -364,12 +364,16 @@ class FileOrganizerGUI(QMainWindow):
         self.analyzed_files = []  # Will store analysis results
         self.current_folder = None  # Current selected folder
         self.analysis_thread = None  # Background analysis thread
+        self.log_messages = []  # Initialize log storage early for logging handler safety
+        self.current_log_level = "INFO"  # Default log level until logging tab initializes
+        self._suppress_item_changed = False  # Guard to prevent recursive updates when syncing model data
         
         # Configuration file path
         self.config_file = os.path.join(os.path.expanduser("~"), ".document_organizer_config.json")
         
         # Load saved configuration
         self.config = self.load_config()
+        self.current_log_level = self.config.get("log_level", self.current_log_level)
         
         # Set default output folder from config or fallback
         default_output = self.config.get("output_folder", r"E:\scanned documents")
@@ -585,6 +589,7 @@ class FileOrganizerGUI(QMainWindow):
             "✓", "Original Filename", "Original Folder", "New Filename", "Destination Folder", 
             "Identity", "Date", "Description"
         ])
+        self.file_model.itemChanged.connect(self.on_analysis_item_changed)
         # Sortable proxy model
         self.proxy_model = ResultSortProxyModel(self)
         self.proxy_model.setSourceModel(self.file_model)
@@ -645,6 +650,10 @@ class FileOrganizerGUI(QMainWindow):
         self.unselect_all_btn = QPushButton("Unselect All")
         self.unselect_all_btn.clicked.connect(self.unselect_all_files)
         process_layout.addWidget(self.unselect_all_btn)
+
+        self.auto_size_columns_btn = QPushButton("Auto Size Columns")
+        self.auto_size_columns_btn.clicked.connect(self.auto_size_results_columns)
+        process_layout.addWidget(self.auto_size_columns_btn)
         
         process_layout.addStretch()
         
@@ -1634,8 +1643,44 @@ class FileOrganizerGUI(QMainWindow):
         # Description
         row.append(QStandardItem(analysis_data['description']))
 
+        previous_flag = self._suppress_item_changed
+        self._suppress_item_changed = True
         self.file_model.appendRow(row)
+        self._suppress_item_changed = previous_flag
     
+    def on_analysis_item_changed(self, item: QStandardItem):
+        """React to inline edits in the analysis table."""
+        if item is None or self._suppress_item_changed:
+            return
+
+        row = item.row()
+        column = item.column()
+
+        if row < 0 or row >= len(self.analyzed_files):
+            return
+
+        text = item.text() if item.text() is not None else ""
+        trimmed_text = text.strip()
+
+        if column == 5:  # Identity
+            self.analyzed_files[row]['identity'] = trimmed_text
+            self._set_item_text(item, trimmed_text)
+            self._regenerate_filename_for_row(row)
+        elif column == 6:  # Date
+            self.analyzed_files[row]['date'] = trimmed_text
+            self._set_item_text(item, trimmed_text)
+            self._regenerate_filename_for_row(row)
+        elif column == 7:  # Description
+            self.analyzed_files[row]['description'] = trimmed_text
+            self._set_item_text(item, trimmed_text)
+            self._regenerate_filename_for_row(row)
+        elif column == 3:  # New filename manually overridden
+            self.analyzed_files[row]['new_filename'] = text
+        elif column == 4:  # Destination folder override
+            self.analyzed_files[row]['destination_folder'] = trimmed_text
+        elif column == 2:  # Original folder edit
+            self.analyzed_files[row]['original_folder'] = trimmed_text
+
     def show_context_menu(self, position):
         """Show context menu for file list"""
         index = self.file_view.indexAt(position)
@@ -1687,24 +1732,129 @@ class FileOrganizerGUI(QMainWindow):
         )
         
         if ok and new_text != current_text:
-            item.setText(new_text)
+            clean_text = new_text.strip() if new_text is not None else ""
+            target_text = clean_text if column in {2, 4, 5, 6, 7} else new_text
+            self._set_item_text(item, target_text)
             
             # Update the corresponding analysis data
             row = source_index.row()
             
             if row < len(self.analyzed_files):                
                 if column == 2:  # Original folder
-                    self.analyzed_files[row]['original_folder'] = new_text
+                    self.analyzed_files[row]['original_folder'] = clean_text
                 elif column == 3:  # New filename
                     self.analyzed_files[row]['new_filename'] = new_text
                 elif column == 4:  # Destination folder
-                    self.analyzed_files[row]['destination_folder'] = new_text
+                    self.analyzed_files[row]['destination_folder'] = clean_text
                 elif column == 5:  # Identity
-                    self.analyzed_files[row]['identity'] = new_text
+                    self.analyzed_files[row]['identity'] = clean_text
+                    self._regenerate_filename_for_row(row)
                 elif column == 6:  # Date
-                    self.analyzed_files[row]['date'] = new_text
+                    self.analyzed_files[row]['date'] = clean_text
                 elif column == 7:  # Description
-                    self.analyzed_files[row]['description'] = new_text
+                    self.analyzed_files[row]['description'] = clean_text
+
+    def _set_item_text(self, item: QStandardItem, text: str):
+        """Safely set item text without re-entering itemChanged handlers."""
+        if item is None:
+            return
+        if text is None:
+            text = ""
+        if item.text() == text:
+            return
+        previous_flag = self._suppress_item_changed
+        self._suppress_item_changed = True
+        try:
+            item.setText(text)
+        finally:
+            self._suppress_item_changed = previous_flag
+
+    def _regenerate_filename_for_row(self, row: int):
+        """Regenerate the suggested filename for a row after identity edits."""
+        try:
+            if row < 0 or row >= len(self.analyzed_files):
+                return
+
+            analysis_data = self.analyzed_files[row]
+            original_path = analysis_data.get('original_path')
+            if not original_path:
+                return
+
+            original_filename = os.path.basename(original_path)
+
+            # Pull the latest identity/date/description from the model
+            identity_item = self.file_model.item(row, 5)
+            date_item = self.file_model.item(row, 6)
+            description_item = self.file_model.item(row, 7)
+
+            identity = identity_item.text().strip() if identity_item and identity_item.text() else ""
+            date = date_item.text().strip() if date_item and date_item.text() else analysis_data.get('date', '')
+            description = description_item.text().strip() if description_item and description_item.text() else analysis_data.get('description', '')
+
+            analysis_snapshot = {
+                'identity': identity,
+                'date': date,
+                'description': description,
+                'category': analysis_data.get('category', 'Other')
+            }
+
+            new_filename = self.file_handler.generate_new_filename(analysis_snapshot, original_filename)
+
+            filename_item = self.file_model.item(row, 3)
+            self._set_item_text(filename_item, new_filename)
+
+            # Ensure trimmed values are reflected back in the view
+            self._set_item_text(identity_item, identity)
+            self._set_item_text(date_item, date)
+            self._set_item_text(description_item, description)
+
+            # Persist updates back to the analysis data
+            analysis_data['identity'] = identity
+            analysis_data['date'] = date
+            analysis_data['description'] = description
+            analysis_data['new_filename'] = new_filename
+
+            logging.debug(
+                "Regenerated filename for row %s due to identity change: %s",
+                row,
+                new_filename
+            )
+        except Exception as exc:
+            logging.error(f"Failed to regenerate filename for row {row}: {exc}")
+
+    def auto_size_results_columns(self):
+        """Resize all analysis result columns to fit their contents."""
+        try:
+            if not hasattr(self, 'file_view') or self.file_view is None:
+                return
+
+            model = self.file_view.model()
+            if model is None:
+                return
+
+            column_count = model.columnCount()
+            if column_count <= 0:
+                return
+
+            header = self.file_view.header()
+            if header is None:
+                return
+
+            for column in range(column_count):
+                self.file_view.resizeColumnToContents(column)
+
+            # Mark that columns now have user-defined sizes so automatic fitting won't override
+            self._user_resized_columns = True
+
+            # Add a small padding to the last column for readability if possible
+            last_section = column_count - 1
+            if last_section >= 0:
+                last_width = header.sectionSize(last_section)
+                header.resizeSection(last_section, last_width + 20)
+
+            logging.info("Auto-sized analysis result columns to fit contents")
+        except Exception as e:
+            logging.error(f"Error auto-sizing result columns: {e}")
 
     def select_all_files(self):
         """Select all files in the list"""

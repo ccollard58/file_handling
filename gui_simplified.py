@@ -2271,18 +2271,35 @@ class FileOrganizerGUI(QMainWindow):
         
         QMessageBox.information(self, "Processing Results", message)
         
-        # Clear the results after successful processing
+        # Remove only the successfully processed files from the model instead of clearing all
         if successful_moves > 0:
-            self.file_model.clear()
-            self.file_model.setHorizontalHeaderLabels([
-                "✓", "Original Filename", "New Filename", "Destination Folder", 
-                "Identity", "Date", "Description"
-            ])
-            self.analyzed_files = []
-            # Refresh source folder view after moving files and deleting empty folders
-            if self.current_folder:
-                self.file_system_model.setRootPath(self.current_folder)
-                self.file_tree.setRootIndex(self.file_system_model.index(self.current_folder))
+            try:
+                # Build a set of original paths for successfully processed files
+                processed_paths = {fd['original_path'] for fd in selected_files[:successful_moves] if 'original_path' in fd}
+
+                # Filter analyzed_files retaining only those not processed
+                if processed_paths:
+                    self.analyzed_files = [af for af in self.analyzed_files if af.get('original_path') not in processed_paths]
+
+                    # Rebuild the model to reflect only remaining (unprocessed) files
+                    # Preserve header
+                    self.file_model.clear()
+                    self.file_model.setHorizontalHeaderLabels([
+                        "✓", "Original Filename", "Original Folder", "New Filename", "Destination Folder", 
+                        "Identity", "Date", "Description"
+                    ])
+                    for af in self.analyzed_files:
+                        self.add_file_to_model(af)
+
+                    # Re-apply sorting/filter proxy if needed
+                    # (Proxy model should pick up changes automatically since underlying model reset)
+            except Exception as e:
+                logging.error(f"Failed to prune processed files from results: {e}")
+            finally:
+                # Refresh source folder view after moving files and deleting empty folders
+                if self.current_folder:
+                    self.file_system_model.setRootPath(self.current_folder)
+                    self.file_tree.setRootIndex(self.file_system_model.index(self.current_folder))
 
     def closeEvent(self, event):
         """Save configuration when the application is closing."""

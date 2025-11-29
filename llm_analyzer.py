@@ -13,6 +13,7 @@ import tempfile
 import base64
 import mimetypes
 from typing import Optional
+from correction_handler import CorrectionHandler
 
 class LLMAnalyzer:
     def __init__(self, model="gemma3:latest", temperature=0.6, vision_model="llava:latest"):
@@ -21,6 +22,7 @@ class LLMAnalyzer:
         self.vision_model = vision_model
         self.llm = None
         self.vision_llm = None
+        self.correction_handler = CorrectionHandler()
         self.initialize_llm()
         self.initialize_vision_llm()
 
@@ -170,6 +172,7 @@ class LLMAnalyzer:
                 'vision',          # Models with 'vision' in name (llama3.2-vision, granite3.2-vision)
                 'minicpm-v',       # MiniCPM vision models
                 'qwen2.5vl',       # Qwen vision-language models
+                'qwen3-vl',        # Qwen3 vision-language models
                 'moondream',       # Moondream vision models
                 'bakllava',        # BakLLaVA models
                 'mistral-small3',  # Mistral Small 3.1/3.2 with vision
@@ -220,6 +223,7 @@ class LLMAnalyzer:
                 'vision',          # Models with 'vision' in name (llama3.2-vision, granite3.2-vision)
                 'minicpm-v',       # MiniCPM vision models
                 'qwen2.5vl',       # Qwen vision-language models
+                'qwen3-vl',        # Qwen3 vision-language models
                 'moondream',       # Moondream vision models
                 'bakllava',        # BakLLaVA models
                 'mistral-small3',  # Mistral Small 3.1/3.2 with vision
@@ -297,7 +301,7 @@ class LLMAnalyzer:
         
         try:
             # First identify the person (Chuck or Colleen)
-            identity = self._identify_person(text)
+            identity = self._identify_person(text, filename)
             
             # Then extract the document date
             date = self._extract_date(text, filename, creation_date)
@@ -308,7 +312,8 @@ class LLMAnalyzer:
                 "identity": identity,
                 "date": date,
                 "description": doc_info["description"],
-                "category": doc_info["category"]
+                "category": doc_info["category"],
+                "financial_institution": doc_info.get("financial_institution")
             }
         except Exception as e:
             logging.error(f"Error analyzing document {filename}: {str(e)}")
@@ -354,7 +359,8 @@ class LLMAnalyzer:
                  "description": "Brief descriptive title",
                  "category": "Your best category suggestion here",
                  "visible_text": "ALL text you can clearly read from the document (be thorough)",
-                 "document_type": "What type of document this appears to be"
+                 "document_type": "What type of document this appears to be",
+                 "financial_institution": "Name of bank/institution if applicable (e.g. TIAA, Chase), else null"
              }"""
             
             logging.info("=== VISION LLM ANALYSIS ===")
@@ -430,7 +436,7 @@ class LLMAnalyzer:
                     visible_text = result.get("visible_text", "").strip()
                     
                     # Use the visible text for identity detection if available; otherwise identity likely Unknown
-                    identity = self._identify_person(visible_text) if visible_text else "Unknown"
+                    identity = self._identify_person(visible_text, filename) if visible_text else "Unknown"
                     
                     # Extract date from the visible text (or fallback to filename/creation date internally)
                     extracted_date = self._extract_date(visible_text or "", filename, creation_date)
@@ -442,7 +448,8 @@ class LLMAnalyzer:
                             "identity": identity,
                             "date": extracted_date,
                             "description": paystub_analysis["description"],
-                            "category": paystub_analysis["category"]
+                            "category": paystub_analysis["category"],
+                            "financial_institution": None
                         }
                     
                     # Return the LLM-provided description and category
@@ -450,7 +457,8 @@ class LLMAnalyzer:
                         "identity": identity,
                         "date": extracted_date,
                         "description": result.get("description", "Image Document"),
-                        "category": result.get("category", "Other")
+                        "category": result.get("category", "Other"),
+                        "financial_institution": result.get("financial_institution")
                     }
                 except json.JSONDecodeError as json_err:
                     logging.warning(f"JSON decode error for vision analysis of {filename}: {json_err}")
@@ -600,11 +608,24 @@ class LLMAnalyzer:
             "identity": "Unknown",
             "date": creation_date.strftime('%Y-%m-%d'),
             "description": description,
-            "category": category
+            "category": category,
+            "financial_institution": None
         }
 
-    def _identify_person(self, text):
+    def _identify_person(self, text, filename=""):
         """Identify if the document belongs to Chuck or Colleen."""
+        # Check corrections first
+        if filename:
+            corrections = self.correction_handler.get_relevant_corrections(filename, text, limit=1)
+            for c in corrections:
+                # If we have a recent correction for a similar file that specifies identity
+                if c.get('corrected_identity') and c['corrected_identity'] != "Unknown":
+                    logging.info(f"Identity suggested by correction for {filename}: {c['corrected_identity']}")
+                    # We could return it directly, or just use it as a strong hint.
+                    # For now, let's return it if it's an exact filename match, otherwise proceed.
+                    if c['filename'] == filename:
+                        return c['corrected_identity']
+
         chuck_patterns = [
             r"Charles\s+Collard", r"Chuck\s+Collard", r"Charles\s+W\.?\s+Collard",
             r"Charles\s+Colle", r"Chuck\s+Colle",  # Handle OCR truncation
@@ -660,6 +681,17 @@ class LLMAnalyzer:
             logging.info("Document appears church-related, assigning to Colleen")
             return "Colleen"
 
+        # Check corrections for identity guidance
+        # We pass a dummy filename here since we might not have it in this method signature, 
+        # but ideally we should pass it. 
+        # Wait, _identify_person signature is (self, text). It doesn't take filename.
+        # I should update the signature or just use text for lookup.
+        # But get_relevant_corrections takes filename.
+        # Let's update the signature of _identify_person to take filename optionally.
+        
+        # For now, let's skip filename-based lookup in _identify_person if I don't change the signature.
+        # But analyze_document calls it.
+        
         # If no match, use LLM to determine the most likely person
         prompt = PromptTemplate(
             input_variables=["text"],
@@ -749,19 +781,34 @@ class LLMAnalyzer:
         """Use LLM to analyze document content and determine category and description."""
         if not self.llm:
             logging.error("LLM not initialized, cannot analyze document content.")
-            return {"description": "Unknown Document", "category": "Uncategorized"}
+            return {"description": "Unknown Document", "category": "Uncategorized", "financial_institution": None}
 
         # First, check if this is a paystub - handle it specially for consistency
         if self._is_paystub(text, filename):
-            return self._analyze_paystub_content(text, filename)
+            result = self._analyze_paystub_content(text, filename)
+            result["financial_institution"] = None # Paystubs don't usually have a financial institution in the same sense
+            return result
+
+        # Get relevant corrections for context
+        corrections = self.correction_handler.get_relevant_corrections(filename, text, limit=3)
+        correction_context = ""
+        if corrections:
+            correction_context = "\nHere are some examples of how similar documents were categorized in the past:\n"
+            for c in corrections:
+                if c.get('corrected_category'):
+                    correction_context += f"- Filename: {c['filename']}\n  Category: {c['corrected_category']}\n"
+            correction_context += "\nUse these examples to guide your categorization if the document is similar.\n"
 
         prompt = PromptTemplate(
-            input_variables=["text", "filename"],
+            input_variables=["text", "filename", "correction_context"],
             template="""
             Analyze the following document text and filename to:
             1. Create a brief descriptive title (5 words or less)
-            2. Suggest the BEST category name for this document using one of the defined categories below:
+            2. Suggest the BEST category name for this document using one of the defined categories below
+            3. If this is a financial document (bank statement, tax form, investment report, etc.), identify the financial institution (e.g., TIAA, Chase, Wells Fargo, IRS).
             
+            {correction_context}
+
             - "Medical": Documents related to personal and family health, including prescriptions, exam results, insurance information, and wellness records. Examples: Medical Imaging Reports, Lab Results, Physical Therapy Plans, Dulera Prescription, Eye Exam Prescription, Pupil Distance Waiver Form
             - "Identification": Passports, driver's licenses, IDs, and vital records. Examples: Passport, Driver's License, Birth Certificate, Social Security Card
             - "Home": Documents related to your residence, including purchase agreements, maintenance records, utilities, property information, and plant/gardening activities. Examples: Home Warranty, Property Tax Documents, Construction Permits, Mortgage Papers, Closing Documents, Homeowner Insurance, Electricity Bills, Cable Bills, Plant Care Guides, Garden Plans, Landscaping Documents
@@ -783,12 +830,12 @@ class LLMAnalyzer:
             {text}
             
             Respond in JSON format:
-            {{"description": "Brief title here", "category": "One of the categories above"}}
+            {{"description": "Brief title here", "category": "One of the categories above", "financial_institution": "Name of institution or null"}}
             """
         )
         
         try:
-            formatted_prompt = prompt.format(text=text[:2000], filename=filename)
+            formatted_prompt = prompt.format(text=text[:2000], filename=filename, correction_context=correction_context)
             logging.info("=== LLM DOCUMENT ANALYSIS ===")
             logging.info(f"Model: {self.model}")
             logging.info(f"Analyzing: {filename}")
@@ -816,7 +863,8 @@ class LLMAnalyzer:
                     logging.debug(f"Successfully extracted JSON: {result}")
                     return {
                         "description": result.get("description", "Unknown Document"),
-                        "category": result.get("category", "Uncategorized")
+                        "category": result.get("category", "Uncategorized"),
+                        "financial_institution": result.get("financial_institution")
                     }
                 except json.JSONDecodeError as json_err:
                     logging.warning(f"JSON decode error for {filename}: {json_err}")
@@ -826,14 +874,16 @@ class LLMAnalyzer:
             # Fallback parsing if JSON extraction fails
             description_match = re.search(r'"description":\s*"([^"]+)"', response_text)
             category_match = re.search(r'"category":\s*"([^"]+)"', response_text)
+            institution_match = re.search(r'"financial_institution":\s*"([^"]+)"', response_text)
 
             return {
                 "description": description_match.group(1) if description_match else "Unknown Document",
-                "category": category_match.group(1) if category_match else "Uncategorized"
+                "category": category_match.group(1) if category_match else "Uncategorized",
+                "financial_institution": institution_match.group(1) if institution_match else None
             }
         except Exception as e:
             logging.error(f"Error in LLM analysis: {str(e)}")
-            return {"description": "Unknown Document", "category": "Uncategorized"}
+            return {"description": "Unknown Document", "category": "Uncategorized", "financial_institution": None}
     
     def _is_paystub(self, text, filename):
         """Check if the document is a paystub based on text content and filename."""
@@ -1003,5 +1053,6 @@ class LLMAnalyzer:
             "identity": "Unknown",
             "date": creation_date.strftime('%Y-%m-%d'),
             "description": os.path.splitext(os.path.basename(filename))[0],
-            "category": "Uncategorized"
+            "category": "Uncategorized",
+            "financial_institution": None
         }

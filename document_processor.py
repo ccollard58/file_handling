@@ -87,12 +87,14 @@ class DocumentProcessor:
     def _extract_text_from_pdf(self, file_path):
         """Extract text from PDF file."""
         text = ""
+        pdf = None
         try:
-            pdf = PdfReader(file_path)
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text
+            with open(file_path, "rb") as pdf_stream:
+                pdf = PdfReader(pdf_stream)
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text
             
             # If no text was extracted, try OCR
             if not text.strip():
@@ -123,9 +125,18 @@ class DocumentProcessor:
         except Exception as e:
             logging.error(f"Error processing PDF {file_path}: {str(e)}")
             return ""
+        finally:
+            if pdf is not None:
+                try:
+                    close_method = getattr(pdf, "close", None)
+                    if callable(close_method):
+                        close_method()
+                except Exception as close_error:
+                    logging.debug(f"Failed to close PdfReader for {file_path}: {close_error}")
     
     def _extract_text_from_image(self, file_path):
         """Extract text from image file using OCR."""
+        image = None
         try:
             image = Image.open(file_path)
 
@@ -195,6 +206,12 @@ class DocumentProcessor:
         except Exception as e:
             logging.error(f"Error processing image {file_path}: {str(e)}")
             return ""
+        finally:
+            if image is not None:
+                try:
+                    image.close()
+                except Exception as close_error:
+                    logging.debug(f"Failed to close image for {file_path}: {close_error}")
     
     def _perform_ocr_on_pdf(self, file_path):
         """Perform OCR on a PDF file by converting its pages to images."""
@@ -497,7 +514,7 @@ class DocumentProcessor:
                     prompt = f"""Analyze this image from page {i+1} of a PDF document. Please:
 
 1. Extract ALL visible text, including any text that might be handwritten, stylized, or difficult for OCR to read
-2. Describe the type of document this appears to be
+2. Describe the type of document this appears to be. For financial documents, ALWAYS include the institution name in your description (e.g., TIAA-CREF, Fidelity, Raymond James, Boeing Pension Plan, etc.)
 3. Identify any key information like names, dates, amounts, or important details
 4. If no readable text is visible, provide a detailed description of what you can see
 
@@ -542,7 +559,7 @@ Please be thorough in extracting text - include headers, body text, captions, an
             prompt = """Analyze this image carefully. Please:
 
 1. Extract ALL visible text, including any text that might be handwritten, stylized, watermarked, or difficult for OCR to read
-2. Describe the type of document or image this appears to be
+2. Describe the type of document or image this appears to be. For financial documents, ALWAYS include the institution name in your description (e.g., TIAA-CREF, Fidelity, Raymond James, Boeing Pension Plan, etc.)
 3. Identify any key information like names, dates, amounts, addresses, or important details
 4. If no readable text is visible, provide a detailed description of what you can see
 

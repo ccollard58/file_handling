@@ -45,6 +45,16 @@ class FileHandler:
         except Exception as e:
             logging.error(f"Error getting creation date for {file_path}: {str(e)}")
             return datetime.now()
+
+    def get_file_modification_date(self, file_path):
+        """Get file modification date from filesystem."""
+        try:
+            # Get file modification time
+            mtime = os.path.getmtime(file_path)
+            return datetime.fromtimestamp(mtime)
+        except Exception as e:
+            logging.error(f"Error getting modification date for {file_path}: {str(e)}")
+            return datetime.now()
     
     def generate_new_filename(self, analysis_result, original_filename):
         """Generate new filename based on analysis results."""
@@ -52,15 +62,33 @@ class FileHandler:
         identity = analysis_result["identity"]
         date = analysis_result["date"]
         description = analysis_result["description"]
+        financial_institution = analysis_result.get("financial_institution")
         
         # Get file extension
         _, ext = os.path.splitext(original_filename)
         
-        # Generate new filename, omitting identity if it's Unknown
+        # Build the filename parts
+        filename_parts = []
+        
+        # 1. Identity
         if identity and identity.lower() != "unknown":
-            new_filename = f"{identity} {date} - {description}{ext}"
-        else:
-            new_filename = f"{date} - {description}{ext}"
+            filename_parts.append(identity)
+            
+        # 2. Date
+        filename_parts.append(date)
+        
+        # Separator
+        filename_parts.append("-")
+        
+        # 3. Financial Institution (if available)
+        if financial_institution and str(financial_institution).lower() not in ["none", "null", "unknown"]:
+            filename_parts.append(financial_institution)
+            
+        # 4. Description
+        filename_parts.append(description)
+        
+        # Join parts
+        new_filename = " ".join(filename_parts) + ext
         
         # Replace invalid characters
         invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
@@ -88,6 +116,7 @@ class FileHandler:
         if ext not in ['.jpg', '.jpeg']:
             return
         
+        img = None
         try:
             # Open the image
             img = Image.open(file_path)
@@ -116,6 +145,12 @@ class FileHandler:
             
         except Exception as e:
             logging.error(f"Error adding metadata to {file_path}: {str(e)}")
+        finally:
+            if img is not None:
+                try:
+                    img.close()
+                except Exception as close_error:
+                    logging.debug(f"Failed to close image while adding metadata for {file_path}: {close_error}")
     
     def _is_file_in_use(self, file_path):
         """Check if a file is currently in use by another process."""
@@ -278,9 +313,9 @@ class FileHandler:
                         logging.warning(f"Could not parse date '{target_date_str}' from analysis. Falling back to file creation date.")
                 
                 if target_timestamp is None:
-                    # Fallback to original file's creation date (scan date)
-                    creation_time = self.get_file_creation_date(backup_path) # Use backup to get original metadata
-                    target_timestamp = creation_time.timestamp()
+                    # Fallback to original file's modification date
+                    mod_time = self.get_file_modification_date(backup_path) # Use backup to get original metadata
+                    target_timestamp = mod_time.timestamp()
 
                 # Set access and modification times
                 os.utime(new_path, (target_timestamp, target_timestamp))

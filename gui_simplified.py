@@ -264,6 +264,11 @@ class FullPreviewDialog(QDialog):
         try:
             if self._pdf_doc:
                 self._pdf_doc.close()
+                # Also explicitly delete to release file handle immediately
+                try:
+                    self._pdf_doc.deleteLater()
+                except Exception:
+                    pass
         finally:
             super().closeEvent(event)
 
@@ -553,14 +558,14 @@ class FileAnalysisThread(QThread):
                 # Extract text from document
                 extracted_text = self.document_processor.extract_text(file_path)
                 
-                # Get file creation date
-                creation_date = self.file_handler.get_file_creation_date(file_path)
+                # Get file modification date
+                modification_date = self.file_handler.get_file_modification_date(file_path)
                 
                 # Analyze document with LLM
                 analysis_result = self.llm_analyzer.analyze_document(
                     extracted_text, 
                     os.path.basename(file_path),
-                    creation_date,
+                    modification_date,
                     file_path  # Pass the full file path for image analysis
                 )
                 
@@ -574,17 +579,9 @@ class FileAnalysisThread(QThread):
                 destination_path = self.file_handler.get_destination_path(analysis_result)
                 
                 # Store analysis result
-                # Derive original folder (relative to source root if possible)
+                # Use full absolute path for the original folder
                 original_dir_abs = os.path.dirname(file_path)
                 original_folder = original_dir_abs
-                if self.source_root:
-                    try:
-                        original_folder_rel = os.path.relpath(original_dir_abs, self.source_root)
-                        # Use empty string for root itself for a cleaner display
-                        original_folder = "" if original_folder_rel == "." else original_folder_rel
-                    except ValueError:
-                        # Different drive on Windows; fall back to absolute
-                        original_folder = original_dir_abs
 
                 analysis_data = {
                     'original_path': file_path,
@@ -595,6 +592,7 @@ class FileAnalysisThread(QThread):
                     'date': analysis_result['date'],
                     'description': analysis_result['description'],
                     'category': analysis_result['category'],
+                    'financial_institution': analysis_result.get('financial_institution'),
                     'extracted_text': extracted_text  # Store the extracted text for preview
                 }
                 
@@ -1680,7 +1678,7 @@ class FileOrganizerGUI(QMainWindow):
             header.setStretchLastSection(False)
 
         # Force column adjustment after analysis completes to ensure proper fit
-        QTimer.singleShot(100, lambda: self.adjust_results_column_widths(force=True))
+        QTimer.singleShot(100, self.auto_size_results_columns)
 
         # Update preview if available
         self.update_preview()
@@ -1739,34 +1737,42 @@ class FileOrganizerGUI(QMainWindow):
     
     def update_preview(self):
         """Update the preview panel with the selected file content"""
+        logging.debug("update_preview() called")
         if not self.analyzed_files:
             self.preview_text.setText("No files analyzed yet.")
-            self.preview_image_label.setVisible(False)
+            self.preview_image_label.hide()
+            logging.debug("No analyzed files, hiding preview")
             return
             
         selection_model = self.file_view.selectionModel()
         if selection_model is None:
             self.preview_text.setText("Select a file to see preview.")
-            self.preview_image_label.setVisible(False)
+            self.preview_image_label.hide()
+            logging.debug("No selection model, hiding preview")
             return
 
         indexes = selection_model.selectedRows()
         if not indexes:
             self.preview_text.setText("Select a file to see preview.")
-            self.preview_image_label.setVisible(False)
+            self.preview_image_label.hide()
+            logging.debug("No selected rows, hiding preview")
             return
             
         # Map from proxy index (view) to source model row index
         proxy_index = indexes[0]
         source_index = self.proxy_model.mapToSource(proxy_index)
         row_index = source_index.row()
+        logging.debug(f"Selected row_index: {row_index}, analyzed_files count: {len(self.analyzed_files)}")
         if 0 <= row_index < len(self.analyzed_files):
             file_path = self.analyzed_files[row_index]['original_path']
+            logging.debug(f"Calling show_file_preview() for: {file_path}")
             self.show_file_preview(file_path)
     
     def show_file_preview(self, file_path):
         """Show a preview of the selected file"""
+        logging.debug(f"show_file_preview() called for: {file_path}")
         if not os.path.exists(file_path):
+            logging.debug(f"File not found: {file_path}")
             self.preview_text.setText(f"File not found: {file_path}")
             self.preview_image_label.setVisible(False)
             return
@@ -1777,6 +1783,7 @@ class FileOrganizerGUI(QMainWindow):
         extracted_text = self.get_extracted_text_for_file(file_path)
         
         file_ext = os.path.splitext(file_path)[1].lower()
+        logging.debug(f"File extension: {file_ext}")
         
         # Handle image files
         if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif']:
@@ -1784,15 +1791,22 @@ class FileOrganizerGUI(QMainWindow):
                 # Load image and create a thumbnail
                 pixmap = QPixmap(file_path)
                 if not pixmap.isNull():
-                    # Scale to fit preview area while maintaining aspect ratio
+                    # Scale to fit the fixed 100x100 thumbnail size while maintaining aspect ratio
                     scaled_pixmap = pixmap.scaled(
-                        self.preview_image_label.width(), 
-                        200,  # Max height
+                        100,  # Max width
+                        100,  # Max height
                         Qt.AspectRatioMode.KeepAspectRatio, 
                         Qt.TransformationMode.SmoothTransformation
                     )
+                    # Ensure the label is visible before setting pixmap
+                    logging.debug(f"About to show image thumbnail for {os.path.basename(file_path)}")
+                    logging.debug(f"Label visible before show(): {self.preview_image_label.isVisible()}")
+                    logging.debug(f"Label size: {self.preview_image_label.size().width()}x{self.preview_image_label.size().height()}")
+                    self.preview_image_label.show()
+                    logging.debug(f"Label visible after show(): {self.preview_image_label.isVisible()}")
                     self.preview_image_label.setPixmap(scaled_pixmap)
-                    self.preview_image_label.setVisible(True)
+                    logging.debug(f"Image thumbnail set for {os.path.basename(file_path)}, size: {scaled_pixmap.width()}x{scaled_pixmap.height()}")
+                    logging.debug(f"Pixmap isNull: {self.preview_image_label.pixmap().isNull()}")
                     
                     # For images, show basic file info in text area
                     file_size = os.path.getsize(file_path) / 1024  # KB
@@ -1814,29 +1828,54 @@ class FileOrganizerGUI(QMainWindow):
                     self.preview_text.setText(preview_text)
                 else:
                     self.preview_text.setText(f"Cannot load image: {file_path}")
-                    self.preview_image_label.setVisible(False)
+                    self.preview_image_label.hide()
             except Exception as e:
                 self.preview_text.setText(f"Error loading image: {str(e)}")
-                self.preview_image_label.setVisible(False)
+                self.preview_image_label.hide()
         
         # Handle PDF files
         elif file_ext == '.pdf':
+            logging.debug("Entering PDF handling section")
             # Generate thumbnail for PDF first page
+            pdf_doc = None
             try:
-                pdf_doc = QPdfDocument(self)
+                logging.debug("Creating QPdfDocument")
+                # CRITICAL: Don't parent QPdfDocument to self, otherwise Qt keeps it alive
+                # and Windows file handles remain locked even after close()
+                pdf_doc = QPdfDocument(None)
+                logging.debug(f"Loading PDF: {file_path}")
                 pdf_doc.load(file_path)
+                logging.debug(f"PDF loaded, page count: {pdf_doc.pageCount()}")
                 # Render first page as thumbnail if available
                 if pdf_doc.pageCount() > 0:
+                    logging.debug("Rendering PDF page 0")
                     img = pdf_doc.render(0, QSize(100, 100))
+                    logging.debug(f"Rendered image size: {img.size().width()}x{img.size().height()}")
                     pix = QPixmap.fromImage(img)
                     thumb = pix.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    # Ensure the label is visible before setting pixmap
+                    logging.debug(f"About to show PDF thumbnail for {os.path.basename(file_path)}")
+                    logging.debug(f"Label visible before show(): {self.preview_image_label.isVisible()}")
+                    logging.debug(f"Label size: {self.preview_image_label.size().width()}x{self.preview_image_label.size().height()}")
+                    self.preview_image_label.show()
+                    logging.debug(f"Label visible after show(): {self.preview_image_label.isVisible()}")
                     self.preview_image_label.setPixmap(thumb)
-                    self.preview_image_label.setVisible(True)
+                    logging.debug(f"PDF thumbnail set for {os.path.basename(file_path)}, size: {thumb.width()}x{thumb.height()}")
+                    logging.debug(f"Pixmap isNull: {self.preview_image_label.pixmap().isNull()}")
                 else:
-                    self.preview_image_label.setVisible(False)
-                pdf_doc.close()
-            except Exception:
-                self.preview_image_label.setVisible(False)
+                    logging.debug("PDF has no pages, hiding thumbnail")
+                    self.preview_image_label.hide()
+            except Exception as e:
+                logging.error(f"Error generating PDF thumbnail: {str(e)}", exc_info=True)
+                self.preview_image_label.hide()
+            finally:
+                # CRITICAL: Explicitly close and delete the QPdfDocument to release file handles
+                if pdf_doc is not None:
+                    try:
+                        pdf_doc.close()
+                        pdf_doc.deleteLater()
+                    except Exception:
+                        pass
              
             # Use stored extracted text if available, otherwise extract (fallback)
             if extracted_text is None:
@@ -1896,6 +1935,22 @@ class FileOrganizerGUI(QMainWindow):
             dlg.exec()
         except Exception as e:
             logging.error(f"Failed to open full preview: {e}")
+    
+    def _clear_preview(self):
+        """Release all preview resources and clear the UI to avoid file locks."""
+        try:
+            # Clear thumbnail and hide to drop any references
+            self.preview_image_label.clear()
+            self.preview_image_label.setVisible(False)
+        except Exception:
+            pass
+        try:
+            # Clear text preview
+            self.preview_text.clear()
+        except Exception:
+            pass
+        # Forget last previewed file
+        self._last_preview_file = None
     
     def add_file_to_model(self, analysis_data):
         """Add a file analysis result to the model including original folder."""
@@ -2156,6 +2211,10 @@ class FileOrganizerGUI(QMainWindow):
     
     def process_files(self):
         """Process the selected files (move and rename)"""
+        # CRITICAL: Clear all preview resources before moving files to release file handles
+        # Windows locks files that are previewed via QPdfDocument/QPixmap
+        self._clear_preview()
+        
         selected_files = []
         
         for row in range(self.file_model.rowCount()):
@@ -2182,6 +2241,28 @@ class FileOrganizerGUI(QMainWindow):
                     description = description_item.text() if description_item else ""
                     
                     file_data = self.analyzed_files[row].copy()
+                    
+                    # Check for corrections and save them
+                    original_dest = file_data.get('destination_folder', '')
+                    original_ident = file_data.get('identity', '')
+                    
+                    if destination_folder != original_dest or identity != original_ident:
+                        try:
+                            # Extract text if available
+                            text = file_data.get('extracted_text', '')
+                            
+                            # Save correction
+                            self.llm_analyzer.correction_handler.save_correction(
+                                original_filename=os.path.basename(file_data['original_path']),
+                                extracted_text=text,
+                                corrected_category=destination_folder,
+                                corrected_identity=identity,
+                                original_category=original_dest,
+                                original_identity=original_ident
+                            )
+                        except Exception as e:
+                            logging.error(f"Failed to save correction: {e}")
+
                     file_data.update({
                         'new_filename': new_filename,
                         'destination_folder': destination_folder,

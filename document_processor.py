@@ -75,8 +75,10 @@ class DocumentProcessor:
                 return self._extract_text_from_docx(file_path)
             elif file_ext == '.doc':
                 return self._extract_text_from_doc(file_path)
-            elif file_ext == '.xlsx':
+            elif file_ext == '.xlsx' or file_ext == '.xls':
                 return self._extract_text_from_xlsx(file_path)
+            elif file_ext == '.txt':
+                return self._extract_text_from_txt(file_path)
             else:
                 logging.warning(f"Unsupported file format: {file_ext}")
                 return ""
@@ -466,8 +468,9 @@ class DocumentProcessor:
             return ""
     
     def _extract_text_from_xlsx(self, file_path):
-        """Extract text from XLSX file."""
+        """Extract text from Excel file (.xlsx or .xls)."""
         try:
+            # pandas read_excel supports both .xlsx (via openpyxl) and .xls (via xlrd)
             df = pd.read_excel(file_path, header=None, dtype=str)
             df = df.fillna('')
             text = ''
@@ -475,7 +478,16 @@ class DocumentProcessor:
                 text += ' '.join(str(cell) for cell in row) + "\n"
             return text
         except Exception as e:
-            logging.error(f"Error processing XLSX {file_path}: {str(e)}")
+            logging.error(f"Error processing Excel file {file_path}: {str(e)}")
+            return ""
+
+    def _extract_text_from_txt(self, file_path):
+        """Extract text from plain text file."""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                return f.read()
+        except Exception as e:
+            logging.error(f"Error processing text file {file_path}: {str(e)}")
             return ""
     
     def _analyze_pdf_with_vision_llm(self, file_path):

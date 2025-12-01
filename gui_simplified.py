@@ -568,6 +568,9 @@ class FileAnalysisThread(QThread):
                     modification_date,
                     file_path  # Pass the full file path for image analysis
                 )
+
+                # Store metadata in the source file immediately
+                self.file_handler.add_metadata_to_image(file_path, analysis_result, extracted_text)
                 
                 # Generate new filename
                 new_filename = self.file_handler.generate_new_filename(
@@ -1507,7 +1510,7 @@ class FileOrganizerGUI(QMainWindow):
         if selection_model is None:
             return selected_files
         selection = selection_model.selectedIndexes()
-        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx']
+        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx', '.xls', '.txt']
         for index in selection:
             if index.column() == 0:  # Avoid duplicates
                 file_path = self.file_system_model.filePath(index)
@@ -1528,7 +1531,7 @@ class FileOrganizerGUI(QMainWindow):
         if not self.current_folder:        return []
         
         all_files = []
-        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx']
+        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx', '.xls', '.txt']
         
         for root, _, files in os.walk(self.current_folder):
             for file in files:

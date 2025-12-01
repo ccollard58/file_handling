@@ -10,3 +10,11 @@ ocr_results/*
 test_docs/*
 dist/**/*
 build/**/*
+category_analysis_results.json
+category_analysis_demo_results.json
+category_analysis_results_1.json
+per_file_analysis_results.json
+test_*.py
+logs/*
+test/*
+test_output/*

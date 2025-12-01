@@ -129,6 +129,15 @@ class FileHandler:
                 "Identity": analysis_result["identity"],
                 "DocumentDate": analysis_result["date"]
             }
+
+            # Add extracted text if available
+            if extracted_text:
+                # Clean up text to avoid issues with newlines/excessive whitespace
+                clean_text = " ".join(str(extracted_text).split())
+                # Truncate if extremely long to avoid EXIF limits (limit to ~30KB to be safe)
+                if len(clean_text) > 30000:
+                    clean_text = clean_text[:30000] + "..."
+                metadata["ExtractedText"] = clean_text
             
             # Add metadata to EXIF
             exif_dict = img.getexif()
@@ -136,7 +145,13 @@ class FileHandler:
                 exif_dict = Image.Exif()
             
             # Add to UserComment field (37510)
-            user_comment = ", ".join([f"{k}: {v}" for k, v in metadata.items()])
+            # Use JSON format for better structure and handling of special characters
+            try:
+                user_comment = json.dumps(metadata, ensure_ascii=False)
+            except Exception:
+                # Fallback to simple string format if JSON fails
+                user_comment = ", ".join([f"{k}: {v}" for k, v in metadata.items()])
+
             exif_dict[37510] = user_comment.encode('utf-16')
             
             # Save the image with the new metadata

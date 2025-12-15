@@ -25,3 +25,4 @@ evaluate
 PyMuPDF
 psutil
 scikit-learn
+xlrd

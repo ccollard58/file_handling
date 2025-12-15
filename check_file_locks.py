@@ -40,7 +40,7 @@ def get_processes_using_file(file_path):
 def check_directory(directory_path, extensions=None):
     """Check all files in a directory for locks."""
     if extensions is None:
-        extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx']
+        extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx', '.xls', '.txt']
     
     locked_files = []
     unlocked_files = []
@@ -85,7 +85,7 @@ def main():
     parser.add_argument(
         "--extensions", "-e",
         nargs="+",
-        default=['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx'],
+        default=['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx', '.xls', '.txt'],
         help="File extensions to check (default: common document types)"
     )
     parser.add_argument(

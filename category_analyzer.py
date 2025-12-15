@@ -33,7 +33,7 @@ class CategoryAnalyzer:
         self.sample_size = sample_size
         self.llm_analyzer = LLMAnalyzer()
         self.document_processor = DocumentProcessor()
-        self.supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.docx', '.doc', '.txt', '.xlsx']
+        self.supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.docx', '.doc', '.txt', '.xlsx', '.xls']
         self.existing_categories = ["Medical Documents", "Receipts", "Contracts", "Photographs", "Other"]
         
         # Use the same LLM instance from the analyzer for category suggestions

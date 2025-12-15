@@ -22,6 +22,14 @@ parser.add_argument('--rf', action='store_true', help='Enable Random Forest anal
 parser.add_argument('--rf-cv', action='store_true', help='Run time-series CV randomized search for RF and report best params')
 parser.add_argument('--rf-cv-iter', type=int, default=10, help='Number of random parameter samples for RF CV')
 parser.add_argument('--rf-cv-splits', type=int, default=3, help='Number of forward-chaining CV splits')
+parser.add_argument(
+    '--treatment-palette',
+    default='husl',
+    help=(
+        'Palette/colormap name used to color treatment shading regions (default: husl). '
+        'Accepts Seaborn palettes (e.g. husl, colorblind, deep, muted, pastel) and Matplotlib colormaps.'
+    ),
+)
 args = parser.parse_args()
 filepath = args.csv_file
 
@@ -101,7 +109,55 @@ pef_slope, pef_intercept, pef_r, pef_p, pef_se = stats.linregress(date_numeric, 
 if 'fev_1' in data.columns:
     fev1_slope, fev1_intercept, fev1_r, fev1_p, fev1_se = stats.linregress(date_numeric, data['fev_1'])
 
-def compute_treatment_spans(df: pd.DataFrame):
+def _available_palette_names() -> list[str]:
+    names: set[str] = set()
+    try:
+        from seaborn.palettes import SEABORN_PALETTES, MPL_PALETTES
+
+        if isinstance(SEABORN_PALETTES, dict):
+            names.update(SEABORN_PALETTES.keys())
+        elif isinstance(SEABORN_PALETTES, (list, tuple, set)):
+            names.update(SEABORN_PALETTES)
+
+        if isinstance(MPL_PALETTES, dict):
+            names.update(MPL_PALETTES.keys())
+        elif isinstance(MPL_PALETTES, (list, tuple, set)):
+            names.update(MPL_PALETTES)
+    except Exception:
+        pass
+
+    try:
+        names.update(plt.colormaps())
+    except Exception:
+        pass
+
+    return sorted(n for n in names if isinstance(n, str) and n.strip())
+
+
+def _print_available_palettes():
+    palettes = _available_palette_names()
+    if not palettes:
+        print("Available palettes: (unable to enumerate on this environment)")
+        return
+    print("Available palettes/colormaps:")
+    for name in palettes:
+        print(f" - {name}")
+
+
+def _make_palette(palette_name: str, n_colors: int):
+    try:
+        return sns.color_palette(palette_name, n_colors=n_colors)
+    except Exception:
+        try:
+            cmap = plt.get_cmap(palette_name)
+            if n_colors <= 1:
+                return [cmap(0.5)]
+            return [cmap(i / (n_colors - 1)) for i in range(n_colors)]
+        except Exception:
+            raise ValueError(f"Invalid palette: {palette_name}")
+
+
+def compute_treatment_spans(df: pd.DataFrame, palette_name: str):
     if not has_note_col or df.empty:
         return [], {}, []
     df_shade = df.sort_values('date')[['date', 'treatment']].copy()
@@ -110,11 +166,17 @@ def compute_treatment_spans(df: pd.DataFrame):
     treatments_in_order = df_shade.drop_duplicates('treatment')['treatment'].tolist()
     if len(treatments_in_order) > 0:
         try:
-            palette = sns.color_palette('husl', n_colors=len(treatments_in_order))
+            palette = _make_palette(palette_name, len(treatments_in_order))
         except Exception:
-            base = plt.get_cmap('tab20').colors
-            repeats = int(np.ceil(len(treatments_in_order) / len(base)))
-            palette = (list(base) * repeats)[:len(treatments_in_order)]
+            print(f"Warning: Invalid --treatment-palette '{palette_name}'.")
+            _print_available_palettes()
+            print("Falling back to default palette: husl")
+            try:
+                palette = _make_palette('husl', len(treatments_in_order))
+            except Exception:
+                base = plt.get_cmap('tab20').colors
+                repeats = int(np.ceil(len(treatments_in_order) / len(base)))
+                palette = (list(base) * repeats)[:len(treatments_in_order)]
     else:
         palette = []
     treatment_to_color = {treat: palette[i] for i, treat in enumerate(treatments_in_order)}
@@ -139,7 +201,7 @@ def draw_spans(ax, spans, treatment_to_color):
         color = treatment_to_color.get(label, (0.85, 0.85, 0.85))
         ax.axvspan(start, end, facecolor=color, alpha=0.22, zorder=0)
 
-spans, treatment_to_color, shading_handles = compute_treatment_spans(data)
+spans, treatment_to_color, shading_handles = compute_treatment_spans(data, args.treatment_palette)
 
 #############################
 # Figure 1: PEF

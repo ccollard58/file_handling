@@ -280,9 +280,12 @@ class QtLogHandler(logging.Handler, QObject):
     def __init__(self):
         logging.Handler.__init__(self)
         QObject.__init__(self)
+        self._closed = False
         
     def emit(self, record):
         """Emit the log record as a Qt signal"""
+        if self._closed:
+            return
         try:
             # Format the message
             level = record.levelname
@@ -291,9 +294,15 @@ class QtLogHandler(logging.Handler, QObject):
             
             # Emit the signal
             self.log_message.emit(level, time_str, message)
-        except Exception:
+        except (RuntimeError, Exception):
             # Ignore errors in logging to prevent infinite loops
+            # RuntimeError occurs when Qt object has been deleted
             pass
+    
+    def close(self):
+        """Mark handler as closed to prevent further emissions."""
+        self._closed = True
+        super().close()
     
     def format_time(self, record):
         """Format the timestamp for display"""
@@ -663,17 +672,9 @@ class FileOrganizerGUI(QMainWindow):
         # Add the handler to the root logger
         root_logger = logging.getLogger()
         root_logger.addHandler(self.qt_log_handler)
-
-        # Ensure handler is removed at process exit to prevent QObject deleted warnings
-        handler_ref = self.qt_log_handler
-        def _cleanup_logging_handler():
-            try:
-                rl = logging.getLogger()
-                if handler_ref in rl.handlers:
-                    rl.removeHandler(handler_ref)
-            except Exception:
-                pass
-        atexit.register(_cleanup_logging_handler)
+        
+        # Track whether cleanup has been done to avoid double-cleanup issues
+        self._logging_cleanup_done = False
         
         # Set the level for our handler from config or default to INFO
         log_level_str = self.config.get("log_level", "INFO")
@@ -2245,23 +2246,43 @@ class FileOrganizerGUI(QMainWindow):
                     
                     file_data = self.analyzed_files[row].copy()
                     
-                    # Check for corrections and save them
+                    # Check for corrections and save them (compare all editable fields)
                     original_dest = file_data.get('destination_folder', '')
                     original_ident = file_data.get('identity', '')
+                    original_desc = file_data.get('description', '')
+                    original_new_filename = file_data.get('new_filename', '')
                     
-                    if destination_folder != original_dest or identity != original_ident:
+                    # Determine if any corrections were made
+                    has_corrections = (
+                        destination_folder != original_dest or 
+                        identity != original_ident or
+                        description != original_desc or
+                        new_filename != original_new_filename
+                    )
+                    
+                    if has_corrections:
                         try:
                             # Extract text if available
                             text = file_data.get('extracted_text', '')
                             
-                            # Save correction
+                            # Save correction with all fields for few-shot learning
                             self.llm_analyzer.correction_handler.save_correction(
                                 original_filename=os.path.basename(file_data['original_path']),
                                 extracted_text=text,
-                                corrected_category=destination_folder,
-                                corrected_identity=identity,
+                                # Category/destination folder corrections
+                                corrected_category=destination_folder if destination_folder != original_dest else None,
                                 original_category=original_dest,
-                                original_identity=original_ident
+                                corrected_destination_folder=destination_folder if destination_folder != original_dest else None,
+                                original_destination_folder=original_dest,
+                                # Identity corrections
+                                corrected_identity=identity if identity != original_ident else None,
+                                original_identity=original_ident,
+                                # Description corrections
+                                corrected_description=description if description != original_desc else None,
+                                original_description=original_desc,
+                                # Filename corrections
+                                corrected_new_filename=new_filename if new_filename != original_new_filename else None,
+                                original_new_filename=original_new_filename,
                             )
                         except Exception as e:
                             logging.error(f"Failed to save correction: {e}")
@@ -2390,13 +2411,29 @@ class FileOrganizerGUI(QMainWindow):
         # Stop analysis thread if running
         self._cleanup_analysis_thread()
         
-        # Remove our logging handler to prevent issues
-        if hasattr(self, 'qt_log_handler'):
-            root_logger = logging.getLogger()
-            root_logger.removeHandler(self.qt_log_handler)
+        # Remove our logging handler to prevent Qt object deletion issues at atexit
+        self._cleanup_logging_handler()
         
         self.save_config()
         event.accept()
+    
+    def _cleanup_logging_handler(self):
+        """Remove the Qt logging handler from the root logger to prevent atexit errors."""
+        if getattr(self, '_logging_cleanup_done', False):
+            return
+        self._logging_cleanup_done = True
+        
+        if hasattr(self, 'qt_log_handler') and self.qt_log_handler is not None:
+            try:
+                root_logger = logging.getLogger()
+                if self.qt_log_handler in root_logger.handlers:
+                    root_logger.removeHandler(self.qt_log_handler)
+                # Prevent the handler from being accessed during logging.shutdown()
+                self.qt_log_handler.close()
+            except Exception:
+                pass
+            finally:
+                self.qt_log_handler = None
 
     def _update_progress_label(self):
         """Update and elide the progress filename label to fit available width."""

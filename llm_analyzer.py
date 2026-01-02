@@ -4,7 +4,6 @@ import logging
 import json
 import requests
 from datetime import datetime
-from langchain_ollama import OllamaLLM
 from langchain_ollama.chat_models import ChatOllama
 from langchain.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage
@@ -689,12 +688,12 @@ class LLMAnalyzer:
         # But get_relevant_corrections takes filename.
         # Let's update the signature of _identify_person to take filename optionally.
         
-        # For now, let's skip filename-based lookup in _identify_person if I don't change the signature.
-        # But analyze_document calls it.
+        # Get few-shot examples from corrections for identity detection
+        identity_examples = self.correction_handler.get_few_shot_examples_for_identity(filename, text, limit=3)
         
         # If no match, use LLM to determine the most likely person
         prompt = PromptTemplate(
-            input_variables=["text"],
+            input_variables=["text", "identity_examples"],
             template="""
             Based on the following document text, determine if it most likely belongs to "Chuck Collard" 
             (also known as "Charles Collard" or "Charles W Collard") or "Colleen McGinnis" (also known as "Colleen Collard" or "Colleen Mueginnis").
@@ -706,7 +705,7 @@ class LLMAnalyzer:
             - If the document contains any church-related content, always assign it to Colleen.
             - If the document contains hearing-related content, it likely belongs to Chuck.
             - Look for any variation of the names including different spellings.
-
+            {identity_examples}
             Document text:
             {text}
             
@@ -714,10 +713,12 @@ class LLMAnalyzer:
             """
         )
         
-        formatted_prompt = prompt.format(text=text[:5000])
+        formatted_prompt = prompt.format(text=text[:5000], identity_examples=identity_examples)
         logging.info("=== LLM IDENTITY DETECTION ===")
         logging.info(f"Model: {self.model}")
         logging.info(f"Text preview: {text[:100]}...")
+        if identity_examples:
+            logging.info(f"Using {identity_examples.count('Example')} few-shot examples from corrections")
         logging.debug(f"Full prompt sent to LLM:\n{formatted_prompt}")
 
         response = self.llm.invoke(formatted_prompt)  # Use first 5000 chars for efficiency
@@ -789,15 +790,16 @@ class LLMAnalyzer:
             result["financial_institution"] = None # Paystubs don't usually have a financial institution in the same sense
             return result
 
-        # Get relevant corrections for context
-        corrections = self.correction_handler.get_relevant_corrections(filename, text, limit=3)
+        # Get few-shot examples from corrections for category and description
+        category_examples = self.correction_handler.get_few_shot_examples_for_category(filename, text, limit=3)
+        description_examples = self.correction_handler.get_few_shot_examples_for_description(filename, text, limit=2)
+        
+        # Combine examples
         correction_context = ""
-        if corrections:
-            correction_context = "\nHere are some examples of how similar documents were categorized in the past:\n"
-            for c in corrections:
-                if c.get('corrected_category'):
-                    correction_context += f"- Filename: {c['filename']}\n  Category: {c['corrected_category']}\n"
-            correction_context += "\nUse these examples to guide your categorization if the document is similar.\n"
+        if category_examples:
+            correction_context += category_examples
+        if description_examples:
+            correction_context += description_examples
 
         prompt = PromptTemplate(
             input_variables=["text", "filename", "correction_context"],
@@ -806,7 +808,6 @@ class LLMAnalyzer:
             1. Create a brief descriptive title (5 words or less)
             2. Suggest the BEST category name for this document using one of the defined categories below
             3. If this is a financial document (bank statement, tax form, investment report, etc.), identify the financial institution (e.g., TIAA, Chase, Wells Fargo, IRS).
-            
             {correction_context}
 
             - "Medical": Documents related to personal and family health, including prescriptions, exam results, insurance information, and wellness records. Examples: Medical Imaging Reports, Lab Results, Physical Therapy Plans, Dulera Prescription, Eye Exam Prescription, Pupil Distance Waiver Form
@@ -840,6 +841,8 @@ class LLMAnalyzer:
             logging.info(f"Model: {self.model}")
             logging.info(f"Analyzing: {filename}")
             logging.info(f"Text preview: {text[:150]}...")
+            if category_examples or description_examples:
+                logging.info(f"Using few-shot examples from corrections (category: {bool(category_examples)}, description: {bool(description_examples)})")
             logging.debug(f"Full prompt sent to LLM:\n{formatted_prompt}")
             
             response = self.llm.invoke(formatted_prompt)

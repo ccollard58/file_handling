@@ -3,6 +3,7 @@ import json
 import os
 from datetime import datetime
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -168,10 +169,21 @@ def ols_fit(X: np.ndarray, y: np.ndarray):
 
 
 def adjusted_means(result, columns, baseline_label: str, day_ref: float):
-    # Build adjusted mean using full design vector at day_ref
+    """Compute adjusted means with 95% CIs and p-values for each treatment."""
     beta = result['beta']
+    se_beta = result['se']
+    p_vals = result['p']
+    dof = result['dof']
+    mse = result['mse']
     col_index = {c: i for i, c in enumerate(columns)}
     tr_cols = [c for c in columns if c.startswith('tr_')]
+
+    # Variance-covariance matrix for computing SE of predicted values
+    # Approximation: use result['mse'] * (X'X)^-1 from fitting
+    # For simplicity, compute treatment-specific CIs using SE of the treatment coefficient
+    # The CI for a non-baseline treatment's adjusted mean can be approximated as:
+    #   baseline_mean ± CI  +  treatment_effect ± CI_effect
+    # but precisely requires the full covariance. We'll use coefficient SE directly.
 
     def predict_for_treat(t_label: str):
         x = np.zeros(len(columns), dtype=float)
@@ -179,7 +191,6 @@ def adjusted_means(result, columns, baseline_label: str, day_ref: float):
             x[col_index['Intercept']] = 1.0
         if 'day' in col_index:
             x[col_index['day']] = day_ref
-        # Polynomial day terms present as day2, day3, ...
         for k in range(2, 10):
             name = f'day{k}'
             if name in col_index:
@@ -188,7 +199,6 @@ def adjusted_means(result, columns, baseline_label: str, day_ref: float):
             tr_name = f'tr_{t_label}'
             if tr_name in col_index:
                 x[col_index[tr_name]] = 1.0
-        # Interactions if present
         if t_label != baseline_label:
             name = f'tr_{t_label}:day'
             if name in col_index:
@@ -197,10 +207,47 @@ def adjusted_means(result, columns, baseline_label: str, day_ref: float):
                 name = f'tr_{t_label}:day{k}'
                 if name in col_index:
                     x[col_index[name]] = day_ref ** k
-        return float(np.dot(x, beta))
+        return float(np.dot(x, beta)), x
 
+    t_crit = stats.t.ppf(0.975, df=dof) if dof > 0 else 1.96
     treatments = [baseline_label] + [c.replace('tr_', '') for c in tr_cols]
-    rows = [{'treatment': t, 'reference_day': day_ref, 'adjusted_mean': predict_for_treat(t)} for t in treatments]
+    rows = []
+    for t in treatments:
+        adj_mean, x_vec = predict_for_treat(t)
+        # For treatment effect coefficient, get its SE and p-value
+        if t == baseline_label:
+            # Baseline: effect is zero by definition; use intercept p-value for reference
+            effect = 0.0
+            se_effect = 0.0
+            p_val = np.nan
+            ci_lower = adj_mean
+            ci_upper = adj_mean
+        else:
+            tr_name = f'tr_{t}'
+            if tr_name in col_index:
+                idx = col_index[tr_name]
+                effect = float(beta[idx])
+                se_effect = float(se_beta[idx])
+                p_val = float(p_vals[idx])
+                ci_lower = adj_mean - t_crit * se_effect
+                ci_upper = adj_mean + t_crit * se_effect
+            else:
+                effect = 0.0
+                se_effect = 0.0
+                p_val = np.nan
+                ci_lower = adj_mean
+                ci_upper = adj_mean
+        rows.append({
+            'treatment': t,
+            'reference_day': day_ref,
+            'adjusted_mean': adj_mean,
+            'effect': effect,
+            'se': se_effect,
+            'ci_lower': ci_lower,
+            'ci_upper': ci_upper,
+            'p_value': p_val,
+            'significant': p_val < 0.05 if not np.isnan(p_val) else False,
+        })
     return pd.DataFrame(rows).sort_values('adjusted_mean', ascending=False)
 
 
@@ -246,11 +293,9 @@ def rf_fit_with_time_split(X: np.ndarray, y: np.ndarray, columns: list[str], dat
 
 
 def rf_adjusted_means(rf_result: dict, columns: list[str], baseline_label: str, all_treatments: list[str], day_ref: float):
-    # Build feature rows for each treatment at day_ref
+    """Compute RF adjusted means. p-values not directly available for RF."""
     feat_names = rf_result['feature_names']
-    # Initialize base vector
     base = {name: 0.0 for name in feat_names}
-    # Set time features
     for name in feat_names:
         if name == 'day':
             base[name] = day_ref
@@ -261,12 +306,10 @@ def rf_adjusted_means(rf_result: dict, columns: list[str], baseline_label: str, 
     rows = []
     for t in [baseline_label] + [t for t in all_treatments if t != baseline_label]:
         x = base.copy()
-        # Treatment dummies are named 'tr_<label>' except baseline
         if t != baseline_label:
             key = f'tr_{t}'
             if key in x:
                 x[key] = 1.0
-        # Interactions with time features if present
         if t != baseline_label:
             name = f'tr_{t}:day'
             if name in x:
@@ -280,10 +323,15 @@ def rf_adjusted_means(rf_result: dict, columns: list[str], baseline_label: str, 
                         if suffix.startswith('day') and suffix[3:].isdigit():
                             k = int(suffix[3:])
                             x[fn] = day_ref ** k
-        # Order features
         x_vec = np.array([x[name] for name in feat_names], dtype=float).reshape(1, -1)
         y_hat = rf_result['model'].predict(x_vec)[0]
-        rows.append({'treatment': t, 'reference_day': day_ref, 'adjusted_mean': float(y_hat)})
+        rows.append({
+            'treatment': t,
+            'reference_day': day_ref,
+            'adjusted_mean': float(y_hat),
+            'p_value': np.nan,  # RF doesn't provide p-values
+            'significant': False,
+        })
     return pd.DataFrame(rows).sort_values('adjusted_mean', ascending=False)
 
 
@@ -490,6 +538,16 @@ def analyze_treatments(csv_file: str, out_dir: str = 'evaluation_results', min_c
         fev1_rf_csv = os.path.join(out_dir, base_name + '_fev1_rf_adjusted_means.csv')
         fev1_rf_adj_df.to_csv(fev1_rf_csv, index=False)
 
+    # Build outputs dict early for return
+    outputs_dict = {
+        'json': json_path,
+        'desc_csv': desc_csv,
+        'pef_csv': pef_csv if pef_adj_df is not None else None,
+        'fev1_csv': fev1_csv if fev1_adj_df is not None else None,
+        'pef_rf_csv': pef_rf_csv,
+        'fev1_rf_csv': fev1_rf_csv,
+    }
+
     # Console summary
     print('\n=== Descriptive (by treatment) ===')
     print(desc[['treatment'] + [c for c in desc.columns if c != 'treatment']].head(10).to_string(index=False))
@@ -526,21 +584,14 @@ def analyze_treatments(csv_file: str, out_dir: str = 'evaluation_results', min_c
         'fev1_adj': fev1_adj_df,
         'pef_rf_adj': pef_rf_adj_df,
         'fev1_rf_adj': fev1_rf_adj_df,
-        'outputs': {
-            'json': json_path,
-            'desc_csv': desc_csv,
-            'pef_csv': pef_csv if pef_adj_df is not None else None,
-            'fev1_csv': fev1_csv if fev1_adj_df is not None else None,
-            'pef_rf_csv': pef_rf_csv,
-            'fev1_rf_csv': fev1_rf_csv,
-        }
+        'outputs': outputs_dict,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze treatments for best PEF/FEV-1 results')
-    parser.add_argument('csv_file', nargs='?', default=r'E:/Downloads/20251111.csv', help='Path to input CSV')
-    parser.add_argument('--min-count', type=int, default=2, help='Minimum records per treatment to include as its own category (others grouped into "Other")')
+    parser.add_argument('csv_file', nargs='?', default=r'data_files/pef_data_20251215.csv', help='Path to input CSV')
+    parser.add_argument('--min-count', type=int, default=5, help='Minimum records per treatment to include as its own category (others grouped into "Other")')
     parser.add_argument('--model', choices=['ols', 'rf', 'both'], default='ols', help='Model to use for adjusted comparisons')
     parser.add_argument('--test-fraction', type=float, default=0.3, help='Fraction of data used for time-aware test split')
     parser.add_argument('--n-estimators', type=int, default=400, help='Number of trees for Random Forest')
@@ -552,6 +603,7 @@ def main():
     parser.add_argument('--rf-cv-iter', type=int, default=10, help='Number of random parameter samples for RF CV')
     parser.add_argument('--rf-cv-splits', type=int, default=3, help='Number of forward-chaining CV splits')
     parser.add_argument('--ref-day', type=float, default=None, help='Override reference day (if omitted, uses median of observed days)')
+    parser.add_argument('--plot', action='store_true', help='Display publication-quality treatment effect chart with 95%% CIs and significance markers')
     args = parser.parse_args()
 
     if args.model in ('rf', 'both') and not SKLEARN_AVAILABLE:
@@ -577,6 +629,116 @@ def main():
     for k, v in res['outputs'].items():
         if v:
             print(f" - {k}: {v}")
+
+    if args.plot:
+        json_path = res['outputs'].get('json') or 'evaluation_results'
+        plot_treatment_effects(res, out_dir=os.path.dirname(json_path) or 'evaluation_results')
+
+
+def plot_treatment_effects(res: dict, out_dir: str = 'evaluation_results', show: bool = True):
+    """Generate a publication-quality forest-style plot of treatment effects.
+
+    Uses diamond markers, 95% confidence intervals as horizontal error bars,
+    and asterisks to denote statistical significance (p < 0.05).
+    """
+    import matplotlib.pyplot as plt
+
+    pef_adj = res.get('pef_adj')
+    fev1_adj = res.get('fev1_adj')
+
+    figs_created = []
+
+    def _make_plot(df: pd.DataFrame, metric_name: str, units: str):
+        if df is None or df.empty:
+            return None
+        df = df.copy().sort_values('adjusted_mean', ascending=True)
+
+        fig, ax = plt.subplots(figsize=(8, max(4, 0.5 * len(df))))
+
+        y_pos = np.arange(len(df))
+        means = df['adjusted_mean'].to_numpy()
+        labels = df['treatment'].tolist()
+
+        # Compute error bar sizes (distance from mean to CI bounds)
+        if 'ci_lower' in df.columns and 'ci_upper' in df.columns:
+            err_lower = means - df['ci_lower'].to_numpy()
+            err_upper = df['ci_upper'].to_numpy() - means
+            xerr = np.vstack([err_lower, err_upper])
+        else:
+            xerr = None
+
+        # Colour by significance
+        if 'significant' in df.columns:
+            colors = ['#2ca02c' if sig else '#1f77b4' for sig in df['significant']]
+        else:
+            colors = '#1f77b4'
+
+        ax.errorbar(
+            means, y_pos, xerr=xerr, fmt='none', ecolor='gray',
+            elinewidth=1.5, capsize=3, capthick=1.5, zorder=1,
+        )
+        ax.scatter(
+            means, y_pos, marker='D', s=80, c=colors, edgecolors='black',
+            linewidths=0.8, zorder=2,
+        )
+
+        # Add significance asterisks
+        if 'p_value' in df.columns:
+            for i, (m, p) in enumerate(zip(means, df['p_value'])):
+                if pd.notna(p):
+                    if p < 0.001:
+                        sig_label = '***'
+                    elif p < 0.01:
+                        sig_label = '**'
+                    elif p < 0.05:
+                        sig_label = '*'
+                    else:
+                        sig_label = ''
+                    if sig_label:
+                        ax.text(m, i + 0.25, sig_label, ha='center', va='bottom', fontsize=12, fontweight='bold')
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(labels, fontsize=10)
+        ax.set_xlabel(f'Adjusted {metric_name} ({units})', fontsize=11)
+        ax.set_title(f'Treatment Effects on {metric_name} (95% CI)', fontsize=13, fontweight='bold')
+        ax.axvline(means[df['treatment'] == df['treatment'].iloc[0]].mean(), color='gray', linestyle='--', linewidth=0.8, alpha=0.6)
+        ax.grid(axis='x', linestyle=':', alpha=0.5)
+
+        # Add legend for significance
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], marker='D', color='w', markerfacecolor='#2ca02c', markersize=10,
+                   markeredgecolor='black', label='Significant (p<0.05)'),
+            Line2D([0], [0], marker='D', color='w', markerfacecolor='#1f77b4', markersize=10,
+                   markeredgecolor='black', label='Not significant'),
+        ]
+        ax.legend(handles=legend_elements, loc='lower right', fontsize=9, framealpha=0.9)
+
+        plt.tight_layout()
+        return fig
+
+    if pef_adj is not None and not pef_adj.empty:
+        fig_pef = _make_plot(pef_adj, 'PEF', 'L/min')
+        if fig_pef:
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            path_pef = os.path.join(out_dir, f'treatment_effects_pef_{ts}.png')
+            fig_pef.savefig(path_pef, dpi=300, bbox_inches='tight')
+            figs_created.append(('pef_plot', path_pef))
+            print(f"Saved PEF treatment effect plot: {path_pef}")
+
+    if fev1_adj is not None and not fev1_adj.empty:
+        fig_fev1 = _make_plot(fev1_adj, 'FEV-1', 'L')
+        if fig_fev1:
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            path_fev1 = os.path.join(out_dir, f'treatment_effects_fev1_{ts}.png')
+            fig_fev1.savefig(path_fev1, dpi=300, bbox_inches='tight')
+            figs_created.append(('fev1_plot', path_fev1))
+            print(f"Saved FEV-1 treatment effect plot: {path_fev1}")
+
+    if show:
+        plt.show()
+
+    return figs_created
 
 
 if __name__ == '__main__':

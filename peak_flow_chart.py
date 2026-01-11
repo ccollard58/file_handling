@@ -12,7 +12,7 @@ import seaborn as sns
 
 # Argument parsing for CSV file path
 parser = argparse.ArgumentParser(description="Plot peak flow readings.")
-parser.add_argument('csv_file', nargs='?', default=r'E:/Downloads/20251215.csv', help='Path to CSV file containing peak flow readings (default: Downloads folder)')
+parser.add_argument('csv_file', nargs='?', default=r'20251215.csv', help='Path to CSV file containing peak flow readings (default: Downloads folder)')
 parser.add_argument('--annotate-treatments', action='store_true', help='Annotate chart with top-performing treatments based on adjusted means')
 parser.add_argument('--annotate-model', choices=['ols', 'rf', 'both'], default='ols', help='Which model rankings to show in annotation')
 parser.add_argument('--min-count', type=int, default=2, help='Minimum records per treatment for analysis (others grouped into "Other")')
@@ -238,7 +238,7 @@ plt.tight_layout()
 if 'fev_1' in data.columns:
     fig2, ax_fev = plt.subplots(figsize=(12, 6))
     draw_spans(ax_fev, spans, treatment_to_color)
-    ax_fev.scatter(data['date'], data['fev_1'], c='orange', marker='D', s=60, alpha=0.7, label='FEV-1')
+    ax_fev.scatter(data['date'], data['fev_1'], c='orange', marker='D', s=20, alpha=0.7, label='FEV-1')
     fev1_line = fev1_intercept + fev1_slope * date_numeric
     ax_fev.plot(data['date'], fev1_line, 'orange', linestyle='--', alpha=0.8, linewidth=2, label=f'FEV-1 Linear (r²={fev1_r**2:.3f}, p={fev1_p:.3f})')
     valid_fev1_mask = ~(date_numeric.isna() | data['fev_1'].isna())
@@ -248,7 +248,7 @@ if 'fev_1' in data.columns:
         valid_fev1 = data['fev_1'][valid_fev1_mask].iloc[fev1_sorted_indices]
         fev1_spline = UnivariateSpline(valid_fev1_date_numeric, valid_fev1, s=len(valid_fev1)*0.1)
         fev1_smooth = fev1_spline(date_smooth)
-        ax_fev.plot(date_smooth_dt, fev1_smooth, 'orange', alpha=0.7, linewidth=3, label='FEV-1 Spline')
+        ax_fev.plot(date_smooth_dt, fev1_smooth, 'orange', alpha=0.7, linewidth=2, label='FEV-1 Spline')
     ax_fev.set_xlabel('Date')
     ax_fev.set_ylabel('FEV-1 (L)')
     ax_fev.set_title(f'FEV-1 with Treatment Periods: {start_dt} — {end_dt}')

@@ -18,3 +18,6 @@ test_*.py
 logs/*
 test/*
 test_output/*
+file_actions_log.json
+recipes.py
+recipes2.txt

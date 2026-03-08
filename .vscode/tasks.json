@@ -1,0 +1,101 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run peak_flow_chart.py",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\peak_flow_chart.py",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run treatment_analysis.py",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\treatment_analysis.py",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run peak_flow_chart with annotation",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\peak_flow_chart.py --annotate-treatments",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run peak_flow_chart with annotation (no warnings)",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\peak_flow_chart.py --annotate-treatments",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run peak_flow_chart with distinct colors",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\peak_flow_chart.py --annotate-treatments",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run chart with bottom-right annotation",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\peak_flow_chart.py --annotate-treatments",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run treatment_analysis RF both",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\treatment_analysis.py --model both",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run treatment_analysis with enhancements",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\treatment_analysis.py --model both --poly-day 2 --interact-day --rf-cv --rf-cv-iter 6 --rf-cv-splits 3",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run treatment_analysis enhanced (fixed CV)",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\treatment_analysis.py --model both --poly-day 2 --interact-day --rf-cv --rf-cv-iter 6 --rf-cv-splits 3",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run treatment_analysis enhanced again",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\treatment_analysis.py --model both --poly-day 2 --interact-day --rf-cv --rf-cv-iter 4 --rf-cv-splits 3",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run peak_flow_chart with RF annotations",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\peak_flow_chart.py --annotate-treatments --annotate-model both --rf --poly-day 2 --interact-day --rf-cv --rf-cv-iter 4 --rf-cv-splits 3",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run peak_flow_chart two plots",
+			"type": "shell",
+			"command": "python e:\\git\\file_handling\\peak_flow_chart.py --annotate-treatments --annotate-model both --rf --poly-day 2 --interact-day",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

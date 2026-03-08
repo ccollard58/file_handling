@@ -100,7 +100,7 @@ class VisionModelEvaluator:
     Evaluates multiple vision-capable LLMs for handwritten text extraction.
     """
     
-    def __init__(self, ollama_base_url: str = "http://localhost:11434", judge_model: str = "llama3.1:latest"):
+    def __init__(self, ollama_base_url: str = "http://localhost:11434", judge_model: str = "llama4:16x17b"):
         """
         Initialize the evaluator.
         

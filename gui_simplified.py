@@ -717,9 +717,11 @@ class FileOrganizerGUI(QMainWindow):
                 "source_folder": self.current_folder,
                 "log_level": current_log_level,
                 "llm_settings": {
+                    "provider": self.llm_analyzer.provider,
                     "model": self.llm_analyzer.model,
                     "vision_model": self.llm_analyzer.vision_model,
-                    "temperature": self.llm_analyzer.temperature
+                    "temperature": self.llm_analyzer.temperature,
+                    "google_api_key": self.llm_analyzer.google_api_key or ""
                 }
             }
             with open(self.config_file, 'w') as f:
@@ -733,13 +735,18 @@ class FileOrganizerGUI(QMainWindow):
         try:
             llm_settings = self.config.get("llm_settings", {})
             if llm_settings:
+                provider = llm_settings.get("provider", "ollama")
                 model = llm_settings.get("model", self.llm_analyzer.model)
                 vision_model = llm_settings.get("vision_model", self.llm_analyzer.vision_model)
                 temperature = llm_settings.get("temperature", self.llm_analyzer.temperature)
+                google_api_key = llm_settings.get("google_api_key", "") or None
                 
                 # Update LLM analyzer with saved settings
-                self.llm_analyzer.update_settings(model, temperature, vision_model)
-                logging.info(f"Restored LLM settings - Model: {model}, Vision: {vision_model}, Temp: {temperature}")
+                self.llm_analyzer.update_settings(
+                    model, temperature, vision_model,
+                    provider=provider, google_api_key=google_api_key
+                )
+                logging.info(f"Restored LLM settings - Provider: {provider}, Model: {model}, Vision: {vision_model}, Temp: {temperature}")
         except Exception as e:
             logging.error(f"Error restoring LLM settings: {e}")
     
@@ -1131,7 +1138,46 @@ class FileOrganizerGUI(QMainWindow):
         settings_layout.setContentsMargins(20, 20, 20, 20)
         settings_layout.setSpacing(20)
         
-        # LLM Settings Group
+        # ── Provider Selection Group ──
+        provider_group = QGroupBox("LLM Provider")
+        provider_layout = QHBoxLayout(provider_group)
+        
+        provider_layout.addWidget(QLabel("Provider:"))
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItems(["Ollama (Local)", "Google AI Studio"])
+        # Set initial value based on analyzer state
+        if self.llm_analyzer.provider == "google":
+            self.provider_combo.setCurrentText("Google AI Studio")
+        else:
+            self.provider_combo.setCurrentText("Ollama (Local)")
+        self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        provider_layout.addWidget(self.provider_combo)
+        provider_layout.addStretch()
+        
+        settings_layout.addWidget(provider_group)
+        
+        # ── Google AI Studio API Key Group ──
+        self.google_api_group = QGroupBox("Google AI Studio API Key")
+        google_api_layout = QHBoxLayout(self.google_api_group)
+        
+        self.google_api_key_edit = QLineEdit()
+        self.google_api_key_edit.setPlaceholderText("Enter your Google AI Studio API key")
+        self.google_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        # Pre-populate from analyzer if available
+        if self.llm_analyzer.google_api_key:
+            self.google_api_key_edit.setText(self.llm_analyzer.google_api_key)
+        google_api_layout.addWidget(self.google_api_key_edit)
+        
+        self.toggle_api_key_btn = QPushButton("Show")
+        self.toggle_api_key_btn.setFixedWidth(60)
+        self.toggle_api_key_btn.clicked.connect(self._toggle_api_key_visibility)
+        google_api_layout.addWidget(self.toggle_api_key_btn)
+        
+        # Show/hide the group depending on initial provider
+        self.google_api_group.setVisible(self.llm_analyzer.provider == "google")
+        settings_layout.addWidget(self.google_api_group)
+        
+        # ── LLM Configuration Group ──
         llm_group = QGroupBox("LLM Configuration")
         llm_layout = QGridLayout(llm_group)
         
@@ -1179,9 +1225,31 @@ class FileOrganizerGUI(QMainWindow):
         self.populate_settings()
         
         # Connect change signals to track when settings are modified
+        self.provider_combo.currentTextChanged.connect(self.on_settings_changed)
+        self.google_api_key_edit.textChanged.connect(self.on_settings_changed)
         self.model_combo.currentTextChanged.connect(self.on_settings_changed)
         self.vision_model_combo.currentTextChanged.connect(self.on_settings_changed)
         self.temp_edit.textChanged.connect(self.on_settings_changed)
+    
+    def _get_selected_provider(self):
+        """Return the provider key ('ollama' or 'google') based on the combo selection."""
+        return "google" if self.provider_combo.currentText() == "Google AI Studio" else "ollama"
+    
+    def _on_provider_changed(self, text):
+        """Handle provider combo change — show/hide API key group and repopulate models."""
+        is_google = (text == "Google AI Studio")
+        self.google_api_group.setVisible(is_google)
+        self.populate_models()
+        self.populate_vision_models()
+    
+    def _toggle_api_key_visibility(self):
+        """Toggle between showing and hiding the API key."""
+        if self.google_api_key_edit.echoMode() == QLineEdit.EchoMode.Password:
+            self.google_api_key_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.toggle_api_key_btn.setText("Hide")
+        else:
+            self.google_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.toggle_api_key_btn.setText("Show")
     
     def create_logging_tab(self):
         """Create the real-time logging tab"""
@@ -1363,61 +1431,105 @@ class FileOrganizerGUI(QMainWindow):
         self.populate_vision_models()
         self.temp_edit.setText(str(self.llm_analyzer.temperature))
         
+        # Sync provider combo
+        if self.llm_analyzer.provider == "google":
+            self.provider_combo.setCurrentText("Google AI Studio")
+        else:
+            self.provider_combo.setCurrentText("Ollama (Local)")
+        
+        # Sync API key
+        if self.llm_analyzer.google_api_key:
+            self.google_api_key_edit.setText(self.llm_analyzer.google_api_key)
+        
         self.reset_apply_button()  # Reset button when populating with current values
 
     def populate_models(self):
-        """Populates the model dropdown."""
+        """Populates the model dropdown based on the selected provider."""
         self.model_combo.clear()
+        provider = self._get_selected_provider()
         try:
-            # Use the static method to get text models (excludes vision models)
-            available_models = self.llm_analyzer.get_text_models()
-            if available_models:
-                # Sort models alphabetically
-                available_models.sort()
-                self.model_combo.addItems(available_models)
-                current_model = self.llm_analyzer.model
-                if current_model in available_models:
-                    self.model_combo.setCurrentText(current_model)
+            if provider == "google":
+                api_key = self.google_api_key_edit.text().strip()
+                if not api_key:
+                    self.model_combo.addItem("Enter API key and click Refresh")
+                    return
+                text_models, _ = self.llm_analyzer.get_google_models(api_key)
+                if text_models:
+                    self.model_combo.addItems(text_models)
+                    current_model = self.llm_analyzer.model
+                    if current_model in text_models:
+                        self.model_combo.setCurrentText(current_model)
                 else:
-                    # If current model not in list, add it to avoid confusion
-                    self.model_combo.addItem(current_model)
-                    self.model_combo.setCurrentText(current_model)
+                    self.model_combo.addItem("No models found")
+                    QMessageBox.warning(self, "Google AI Studio", "Could not fetch models. Check your API key.")
             else:
-                self.model_combo.addItem("No models found")
-                QMessageBox.warning(self, "Ollama Models", "Could not fetch models from Ollama. Is it running?")
+                # Ollama provider
+                available_models = self.llm_analyzer.get_text_models()
+                if available_models:
+                    available_models.sort()
+                    self.model_combo.addItems(available_models)
+                    current_model = self.llm_analyzer.model
+                    if current_model in available_models:
+                        self.model_combo.setCurrentText(current_model)
+                    else:
+                        self.model_combo.addItem(current_model)
+                        self.model_combo.setCurrentText(current_model)
+                else:
+                    self.model_combo.addItem("No models found")
+                    QMessageBox.warning(self, "Ollama Models", "Could not fetch models from Ollama. Is it running?")
         except Exception as e:
             self.model_combo.addItem("Error fetching models")
-            QMessageBox.critical(self, "Ollama Error", f"An error occurred while fetching models: {e}")
+            QMessageBox.critical(self, "Model Error", f"An error occurred while fetching models: {e}")
 
     def populate_vision_models(self):
-        """Populates the vision model dropdown."""
+        """Populates the vision model dropdown based on the selected provider."""
         self.vision_model_combo.clear()
+        provider = self._get_selected_provider()
         try:
-            # Use the static method to get vision models
-            available_models = self.llm_analyzer.get_vision_models()
-            if available_models:
-                # Sort models alphabetically
-                available_models.sort()
-                self.vision_model_combo.addItems(available_models)
-                current_model = self.llm_analyzer.vision_model
-                if current_model in available_models:
-                    self.vision_model_combo.setCurrentText(current_model)
+            if provider == "google":
+                api_key = self.google_api_key_edit.text().strip()
+                if not api_key:
+                    self.vision_model_combo.addItem("Enter API key and click Refresh")
+                    return
+                _, vision_models = self.llm_analyzer.get_google_models(api_key)
+                if vision_models:
+                    self.vision_model_combo.addItems(vision_models)
+                    current_model = self.llm_analyzer.vision_model
+                    if current_model in vision_models:
+                        self.vision_model_combo.setCurrentText(current_model)
                 else:
-                    # If current model not in list, add it to avoid confusion
-                    self.vision_model_combo.addItem(current_model)
-                    self.vision_model_combo.setCurrentText(current_model)
+                    self.vision_model_combo.addItem("No vision models found")
             else:
-                self.vision_model_combo.addItem("No vision models found")
-                QMessageBox.warning(self, "Ollama Vision Models", "Could not fetch vision models from Ollama. Consider installing a vision model like 'llava'.")
+                # Ollama provider
+                available_models = self.llm_analyzer.get_vision_models()
+                if available_models:
+                    available_models.sort()
+                    self.vision_model_combo.addItems(available_models)
+                    current_model = self.llm_analyzer.vision_model
+                    if current_model in available_models:
+                        self.vision_model_combo.setCurrentText(current_model)
+                    else:
+                        self.vision_model_combo.addItem(current_model)
+                        self.vision_model_combo.setCurrentText(current_model)
+                else:
+                    self.vision_model_combo.addItem("No vision models found")
+                    QMessageBox.warning(self, "Ollama Vision Models", "Could not fetch vision models from Ollama. Consider installing a vision model like 'llava'.")
         except Exception as e:
             self.vision_model_combo.addItem("Error fetching vision models")
-            QMessageBox.critical(self, "Ollama Error", f"An error occurred while fetching vision models: {e}")
+            QMessageBox.critical(self, "Model Error", f"An error occurred while fetching vision models: {e}")
 
     def apply_settings(self):
         """Applies the new settings to the LLM analyzer."""
+        provider = self._get_selected_provider()
         model = self.model_combo.currentText()
         vision_model = self.vision_model_combo.currentText()
         temperature_str = self.temp_edit.text()
+        google_api_key = self.google_api_key_edit.text().strip() if provider == "google" else self.llm_analyzer.google_api_key
+        
+        # Validate provider-specific requirements
+        if provider == "google" and not google_api_key:
+            QMessageBox.warning(self, "Missing API Key", "Please enter your Google AI Studio API key.")
+            return
         
         try:
             temperature = float(temperature_str)
@@ -1428,12 +1540,17 @@ class FileOrganizerGUI(QMainWindow):
             return
             
         try:
-            # Update LLM settings
-            self.llm_analyzer.update_settings(model, temperature, vision_model)
+            # Update LLM settings with provider info
+            self.llm_analyzer.update_settings(
+                model, temperature, vision_model,
+                provider=provider, google_api_key=google_api_key
+            )
             
-            self.reset_apply_button()  # Reset button appearance after successful apply
+            self.reset_apply_button()
+            provider_label = "Google AI Studio" if provider == "google" else "Ollama"
             QMessageBox.information(self, "Settings Updated", 
                 f"Settings updated successfully.\n"
+                f"Provider: {provider_label}\n"
                 f"Text Model: {model}\n"
                 f"Vision Model: {vision_model}\n"
                 f"Temperature: {temperature}")

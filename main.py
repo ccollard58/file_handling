@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 from PyQt6.QtWidgets import QApplication
 from document_processor import DocumentProcessor
 from llm_analyzer import LLMAnalyzer
@@ -7,7 +8,36 @@ from file_handler import FileHandler
 from gui_simplified import FileOrganizerGUI
 import logging
 from logging.handlers import RotatingFileHandler
-import os
+
+
+def load_saved_llm_settings() -> dict:
+    """Load persisted LLM settings from the user config file if available."""
+    config_file = os.path.join(os.path.expanduser("~"), ".document_organizer_config.json")
+    default_settings = {
+        "provider": "ollama",
+        "model": "gemma3:latest",
+        "vision_model": "llava:latest",
+        "temperature": 0.6,
+        "google_api_key": None,
+    }
+
+    if not os.path.exists(config_file):
+        return default_settings
+
+    try:
+        with open(config_file, "r", encoding="utf-8") as file:
+            config = json.load(file)
+        llm_settings = config.get("llm_settings", {})
+        return {
+            "provider": llm_settings.get("provider", default_settings["provider"]),
+            "model": llm_settings.get("model", default_settings["model"]),
+            "vision_model": llm_settings.get("vision_model", default_settings["vision_model"]),
+            "temperature": llm_settings.get("temperature", default_settings["temperature"]),
+            "google_api_key": llm_settings.get("google_api_key", "") or None,
+        }
+    except Exception as exc:
+        logging.warning(f"Unable to load LLM settings from config: {exc}")
+        return default_settings
 
 def main():
     # Set up logging with rotating file handler
@@ -52,8 +82,16 @@ def main():
     app.setApplicationName("Document Organizer")
     
     try:
+        saved_llm_settings = load_saved_llm_settings()
+
         # Initialize components
-        llm_analyzer = LLMAnalyzer(vision_model="llava:latest")  # Set default vision model
+        llm_analyzer = LLMAnalyzer(
+            model=saved_llm_settings["model"],
+            temperature=saved_llm_settings["temperature"],
+            vision_model=saved_llm_settings["vision_model"],
+            provider=saved_llm_settings["provider"],
+            google_api_key=saved_llm_settings["google_api_key"],
+        )
         document_processor = DocumentProcessor(llm_analyzer)  # Pass llm_analyzer to document processor
         
         # Default output directory is the user's Documents folder

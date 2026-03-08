@@ -14,11 +14,23 @@ import mimetypes
 from typing import Optional
 from correction_handler import CorrectionHandler
 
+try:
+    from google import genai
+    from google.genai import types as google_types
+    GOOGLE_GENAI_AVAILABLE = True
+except ImportError:
+    GOOGLE_GENAI_AVAILABLE = False
+    logging.warning("google-genai package not installed. Google AI Studio provider will be unavailable.")
+
 class LLMAnalyzer:
-    def __init__(self, model="gemma3:latest", temperature=0.6, vision_model="llava:latest"):
+    def __init__(self, model="gemma3:latest", temperature=0.6, vision_model="llava:latest",
+                 provider="ollama", google_api_key=None):
         self.model = model
         self.temperature = temperature
         self.vision_model = vision_model
+        self.provider = provider  # "ollama" or "google"
+        self.google_api_key = google_api_key
+        self.google_client = None
         self.llm = None
         self.vision_llm = None
         self.correction_handler = CorrectionHandler()
@@ -94,55 +106,185 @@ class LLMAnalyzer:
         
         return any(pattern in model_lower for pattern in qwen_patterns)
 
+    def _init_google_client(self):
+        """Initialize or reinitialize the Google GenAI client."""
+        if not GOOGLE_GENAI_AVAILABLE:
+            raise RuntimeError("google-genai package is not installed. Run: pip install -U google-genai")
+        if not self.google_api_key:
+            raise RuntimeError("Google API key is not set. Please enter your API key in Settings.")
+        self.google_client = genai.Client(api_key=self.google_api_key)
+        logging.info("Google GenAI client initialized successfully")
+
     def initialize_llm(self):
-        """Initializes the ChatOllama instance."""
+        """Initializes the LLM instance based on the selected provider."""
         try:
-            # Check if this is a Qwen model and use specific hyperparameters
-            if self._is_qwen_model(self.model):
-                self.llm = ChatOllama(
-                    model=self.model, 
-                    temperature=self.temperature,
-                    top_p=0.8,
-                    top_k=20,
-                    min_p=0.0
-                )
-                logging.info(f"LLM initialized successfully with Qwen model {self.model}, temperature {self.temperature}, top_p=0.8, top_k=20, min_p=0.0")
+            if self.provider == "google":
+                self._init_google_client()
+                self.llm = True  # sentinel — we use google_client directly
+                logging.info(f"Google AI Studio LLM initialized with model {self.model}, temperature {self.temperature}")
             else:
-                self.llm = ChatOllama(model=self.model, temperature=self.temperature)
-                logging.info(f"LLM initialized successfully with model {self.model} and temperature {self.temperature}")
+                # Ollama provider
+                if self._is_qwen_model(self.model):
+                    self.llm = ChatOllama(
+                        model=self.model, 
+                        temperature=self.temperature,
+                        top_p=0.8,
+                        top_k=20,
+                        min_p=0.0
+                    )
+                    logging.info(f"LLM initialized successfully with Qwen model {self.model}, temperature {self.temperature}, top_p=0.8, top_k=20, min_p=0.0")
+                else:
+                    self.llm = ChatOllama(model=self.model, temperature=self.temperature)
+                    logging.info(f"LLM initialized successfully with model {self.model} and temperature {self.temperature}")
         except Exception as e:
             logging.error(f"Error initializing LLM: {str(e)}")
-            self.llm = None  # Ensure llm is None if initialization fails
+            self.llm = None
             raise
 
     def initialize_vision_llm(self):
-        """Initializes the vision-capable ChatOllama instance with temperature 0.0 for deterministic analysis."""
+        """Initializes the vision-capable LLM instance."""
         try:
-            # Check if this is a Qwen vision model and use specific hyperparameters
-            if self._is_qwen_model(self.vision_model):
-                self.vision_llm = ChatOllama(
-                    model=self.vision_model, 
-                    temperature=0.0,
-                    top_p=0.8,
-                    top_k=20,
-                    min_p=0.0
-                )
-                logging.info(f"Vision LLM initialized successfully with Qwen model {self.vision_model}, temperature 0.0, top_p=0.8, top_k=20, min_p=0.0")
+            if self.provider == "google":
+                # Google models are multimodal — reuse the same client
+                if self.google_client is None:
+                    self._init_google_client()
+                self.vision_llm = True  # sentinel — we use google_client directly
+                logging.info(f"Google AI Studio Vision LLM initialized with model {self.vision_model}")
             else:
-                self.vision_llm = ChatOllama(model=self.vision_model, temperature=0.0)
-                logging.info(f"Vision LLM initialized successfully with model {self.vision_model} and temperature 0.0")
+                # Ollama provider
+                if self._is_qwen_model(self.vision_model):
+                    self.vision_llm = ChatOllama(
+                        model=self.vision_model, 
+                        temperature=0.0,
+                        top_p=0.8,
+                        top_k=20,
+                        min_p=0.0
+                    )
+                    logging.info(f"Vision LLM initialized successfully with Qwen model {self.vision_model}, temperature 0.0, top_p=0.8, top_k=20, min_p=0.0")
+                else:
+                    self.vision_llm = ChatOllama(model=self.vision_model, temperature=0.0)
+                    logging.info(f"Vision LLM initialized successfully with model {self.vision_model} and temperature 0.0")
         except Exception as e:
             logging.error(f"Error initializing Vision LLM: {str(e)}")
             self.vision_llm = None
 
-    def update_settings(self, model, temperature, vision_model=None):
+    def _invoke_llm(self, prompt_text):
+        """Invoke the text LLM and return the response text string."""
+        if self.provider == "google":
+            response = self.google_client.models.generate_content(
+                model=self.model,
+                contents=prompt_text,
+                config=google_types.GenerateContentConfig(
+                    temperature=self.temperature,
+                ),
+            )
+            return response.text
+        else:
+            response = self.llm.invoke(prompt_text)
+            return self._as_text(response)
+
+    def _invoke_vision_llm(self, prompt_text, image_path):
+        """Invoke the vision LLM with an image and return the response text string."""
+        if self.provider == "google":
+            # Read image bytes and determine MIME type
+            prepared_path = self._prepare_image_path(image_path)
+            mime, _ = mimetypes.guess_type(prepared_path)
+            if not mime or not mime.startswith("image/"):
+                mime = "image/png"
+            with open(prepared_path, "rb") as f:
+                image_bytes = f.read()
+            image_part = google_types.Part.from_bytes(data=image_bytes, mime_type=mime)
+            response = self.google_client.models.generate_content(
+                model=self.vision_model,
+                contents=[image_part, prompt_text],
+                config=google_types.GenerateContentConfig(
+                    temperature=0.0,
+                ),
+            )
+            return response.text
+        else:
+            # Ollama vision path (existing logic)
+            prepared_path = self._prepare_image_path(image_path)
+            try:
+                image_url = self._image_to_data_url(prepared_path)
+            except Exception as encode_err:
+                logging.warning(f"Failed to embed image as data URL, falling back to file URL: {encode_err}")
+                image_url = self._make_file_url(prepared_path)
+
+            b64_image = None
+            try:
+                b64_image = self._image_to_base64(prepared_path)
+            except Exception as b64_err:
+                logging.warning(f"Failed to base64 encode image for REST fallback: {b64_err}")
+
+            message = HumanMessage(
+                content=[
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": image_url},
+                ]
+            )
+
+            try:
+                response = self.vision_llm.invoke([message])
+                return self._as_text(response)
+            except TypeError as type_err:
+                if "unexpected keyword argument 'images'" in str(type_err).lower():
+                    logging.error("Ollama client lacks 'images' support; using REST fallback.")
+                    return self._vision_chat_via_rest(prompt_text, b64_image)
+                else:
+                    raise
+
+    def update_settings(self, model, temperature, vision_model=None,
+                        provider=None, google_api_key=None):
         """Updates the LLM model and temperature and re-initializes the LLM."""
         self.model = model
         self.temperature = float(temperature)
         if vision_model:
             self.vision_model = vision_model
+        if provider is not None:
+            self.provider = provider
+        if google_api_key is not None:
+            self.google_api_key = google_api_key
         self.initialize_llm()
         self.initialize_vision_llm()
+
+    @staticmethod
+    def get_google_models(api_key):
+        """Fetches available Gemini models from Google AI Studio."""
+        if not GOOGLE_GENAI_AVAILABLE:
+            logging.error("google-genai package not installed.")
+            return [], []
+        if not api_key:
+            logging.error("Google API key not provided.")
+            return [], []
+        try:
+            client = genai.Client(api_key=api_key)
+            all_models = []
+            for model in client.models.list():
+                name = model.name
+                # The API returns names like "models/gemini-2.5-flash" — strip the prefix
+                if name.startswith("models/"):
+                    name = name[len("models/"):]
+                all_models.append(name)
+            # Filter to generative models (exclude embedding, image-gen-only, etc.)
+            text_models = []
+            vision_models = []
+            for m in all_models:
+                ml = m.lower()
+                # Skip non-generative models
+                if any(skip in ml for skip in ['embedding', 'aqa', 'retrieval', 'imagen',
+                                                'veo', 'lyria', 'tts', 'live', 'robotics',
+                                                'nano-banana']):
+                    continue
+                text_models.append(m)
+                # Gemini models are multimodal — they all support vision
+                vision_models.append(m)
+            text_models.sort()
+            vision_models.sort()
+            return text_models, vision_models
+        except Exception as e:
+            logging.error(f"Error fetching Google AI Studio models: {e}")
+            return [], []
 
     @staticmethod
     def get_available_models(ollama_base_url="http://localhost:11434"):
@@ -368,51 +510,7 @@ class LLMAnalyzer:
             logging.info(f"File path: {file_path}")
             logging.debug(f"Full prompt sent to Vision LLM:\n{prompt}")
             
-            # Prepare image path (convert TIFF to PNG if needed) and build file URL
-            prepared_path = self._prepare_image_path(file_path)
-            # Prefer embedding as a data URL to avoid file path resolution issues
-            try:
-                image_url = self._image_to_data_url(prepared_path)
-            except Exception as encode_err:
-                logging.warning(f"Failed to embed image as data URL, falling back to file URL: {encode_err}")
-                image_url = self._make_file_url(prepared_path)
-
-            # Also compute raw base64 for REST fallback
-            b64_image = None
-            try:
-                b64_image = self._image_to_base64(prepared_path)
-            except Exception as b64_err:
-                logging.warning(f"Failed to base64 encode image for REST fallback: {b64_err}")
-
-            message = HumanMessage(
-                content=[
-                    {"type": "text", "text": prompt},
-                    # For Ollama in LangChain, image_url should be a string URL
-                    {"type": "image_url", "image_url": image_url},
-                ]
-            )
-
-            try:
-                response = self.vision_llm.invoke([message])
-                # Extract the text content from the response in a robust way
-                response_text = None
-                try:
-                    # Some drivers may expose .text(); LangChain messages expose .content
-                    if hasattr(response, "text") and callable(getattr(response, "text")):
-                        response_text = response.text()
-                    elif hasattr(response, "content"):
-                        response_text = response.content
-                    else:
-                        response_text = str(response)
-                except Exception:
-                    response_text = str(response)
-            except TypeError as type_err:
-                # Common mismatch: ollama.Client.chat() missing 'images' keyword due to older ollama python pkg
-                if "unexpected keyword argument 'images'" in str(type_err).lower():
-                    logging.error("Ollama Python client appears outdated and doesn't support 'images' in chat(); attempting REST fallback.")
-                    response_text = self._vision_chat_via_rest(prompt, b64_image)
-                else:
-                    raise
+            response_text = self._invoke_vision_llm(prompt, file_path)
 
             logging.info(f"Vision LLM response: {response_text.strip() if isinstance(response_text, str) else response_text}")
             logging.info("=== END VISION LLM ANALYSIS ===")
@@ -488,36 +586,7 @@ class LLMAnalyzer:
         the_prompt = prompt or default_prompt
 
         try:
-            prepared_path = self._prepare_image_path(file_path)
-            # Prefer data URL; keep base64 for REST
-            try:
-                image_url = self._image_to_data_url(prepared_path)
-            except Exception as encode_err:
-                logging.warning(f"Failed to embed image as data URL, falling back to file URL: {encode_err}")
-                image_url = self._make_file_url(prepared_path)
-
-            b64_image = None
-            try:
-                b64_image = self._image_to_base64(prepared_path)
-            except Exception as b64_err:
-                logging.warning(f"Failed to base64 encode image for REST fallback: {b64_err}")
-
-            message = HumanMessage(
-                content=[
-                    {"type": "text", "text": the_prompt},
-                    {"type": "image_url", "image_url": image_url},
-                ]
-            )
-
-            try:
-                response = self.vision_llm.invoke([message])
-                response_text = self._as_text(response)
-            except TypeError as type_err:
-                if "unexpected keyword argument 'images'" in str(type_err).lower():
-                    logging.error("Ollama client lacks 'images' support; using REST fallback for vision text.")
-                    response_text = self._vision_chat_via_rest(the_prompt, b64_image)
-                else:
-                    raise
+            response_text = self._invoke_vision_llm(the_prompt, file_path)
 
             if isinstance(response_text, str):
                 return response_text.strip()
@@ -721,8 +790,7 @@ class LLMAnalyzer:
             logging.info(f"Using {identity_examples.count('Example')} few-shot examples from corrections")
         logging.debug(f"Full prompt sent to LLM:\n{formatted_prompt}")
 
-        response = self.llm.invoke(formatted_prompt)  # Use first 5000 chars for efficiency
-        response_text = self._as_text(response)
+        response_text = self._invoke_llm(formatted_prompt)
 
         logging.info(f"LLM response: {response_text}")
         logging.info("=== END LLM IDENTITY DETECTION ===")
@@ -845,8 +913,7 @@ class LLMAnalyzer:
                 logging.info(f"Using few-shot examples from corrections (category: {bool(category_examples)}, description: {bool(description_examples)})")
             logging.debug(f"Full prompt sent to LLM:\n{formatted_prompt}")
             
-            response = self.llm.invoke(formatted_prompt)
-            response_text = self._as_text(response)
+            response_text = self._invoke_llm(formatted_prompt)
             
             logging.info(f"LLM response: {response_text}")
             logging.info("=== END LLM DOCUMENT ANALYSIS ===")

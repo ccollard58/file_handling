@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Book Club Reading List - Genres & Ratings</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: "Segoe UI", "Segoe UI Symbol", "Apple Color Emoji", "Noto Color Emoji", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f0f2f5;
+        }
+        .trophy { font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif; margin-right: 6px; }		
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            padding: 30px;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            color: white;
+        }
+        .stat-item {
+            text-align: center;
+            padding: 10px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 8px;
+        }
+        .stat-number {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .stat-label {
+            font-size: 12px;
+            opacity: 0.9;
+        }
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            margin-bottom: 25px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+        .legend-title {
+            width: 100%;
+            text-align: center;
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 10px;
+        }
+        .legend-item {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .sort-controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .sort-btn {
+            padding: 8px 16px;
+            border: 2px solid #667eea;
+            background: white;
+            color: #667eea;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .sort-btn:hover, .sort-btn.active {
+            background: #667eea;
+            color: white;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th {
+            background: #2c3e50;
+            color: white;
+            padding: 15px 12px;
+            text-align: left;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+        th:first-child {
+            border-radius: 8px 0 0 0;
+        }
+        th:last-child {
+            border-radius: 0 8px 0 0;
+        }
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #e9ecef;
+        }
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+        .rank {
+            text-align: center;
+            font-weight: 600;
+            color: #666;
+            width: 50px;
+        }
+        .title {
+            font-weight: 600;
+            padding-left: 15px !important;
+        }
+        .title a {
+            text-decoration: none;
+        }
+        .title a:hover {
+            text-decoration: underline;
+        }
+        .winner-badge {
+            font-size: 14px;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        .winner-row {
+            background-color: rgba(255, 215, 0, 0.08) !important;
+        }
+        .winner-row:hover {
+            background-color: rgba(255, 215, 0, 0.15) !important;
+        }
+        .winner-row .title a {
+            text-decoration: line-through;
+        }
+        .winner-row .title a:hover {
+            text-decoration: line-through underline;
+        }
+        .author {
+            color: #666;
+        }
+        .nominee {
+            color: #888;
+            font-style: italic;
+            text-align: center;
+        }
+        .genre {
+            text-align: center;
+            font-weight: 500;
+            font-size: 13px;
+            border-radius: 4px;
+        }
+        .rating {
+            text-align: center;
+            white-space: nowrap;
+        }
+        .rating-number {
+            font-weight: bold;
+            font-size: 16px;
+            margin-right: 8px;
+        }
+        .stars {
+            font-size: 14px;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e9ecef;
+            color: #666;
+            font-size: 14px;
+        }
+        @media (max-width: 768px) {
+            .author, .nominee {
+                display: none;
+            }
+            th:nth-child(3), td:nth-child(3),
+            th:nth-child(4), td:nth-child(4) {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📚 Book Club Reading List</h1>
+        <p class="subtitle">Books discussed in family book club emails • Ratings from Goodreads</p>
+        
+        <div class="stats">
+            <!-- Populated by JavaScript -->
+        </div>
+        
+        <div class="legend">
+            <div class="legend-title">📖 Genre Color Key</div>
+            
+            <span class="legend-item" style="background-color: #E0F2F1; color: #00695C; border: 2px solid #00695C;">
+                Biography
+            </span>
+            <span class="legend-item" style="background-color: #ECEFF1; color: #455A64; border: 2px solid #455A64;">
+                Business
+            </span>
+            <span class="legend-item" style="background-color: #EFEBE9; color: #5D4037; border: 2px solid #5D4037;">
+                Classic
+            </span>
+            <span class="legend-item" style="background-color: #EDE7F6; color: #512DA8; border: 2px solid #512DA8;">
+                Fantasy
+            </span>
+            <span class="legend-item" style="background-color: #E3F2FD; color: #1565C0; border: 2px solid #1565C0;">
+                Fiction
+            </span>
+            <span class="legend-item" style="background-color: #FFF3E0; color: #E65100; border: 2px solid #E65100;">
+                Historical Fiction
+            </span>
+            <span class="legend-item" style="background-color: #E8F5E9; color: #2E7D32; border: 2px solid #2E7D32;">
+                History
+            </span>
+            <span class="legend-item" style="background-color: #F1F8E9; color: #558B2F; border: 2px solid #558B2F;">
+                Memoir
+            </span>
+            <span class="legend-item" style="background-color: #F3E5F5; color: #7B1FA2; border: 2px solid #7B1FA2;">
+                Mystery
+            </span>
+            <span class="legend-item" style="background-color: #FAFAFA; color: #424242; border: 2px solid #424242;">
+                Nonfiction
+            </span>
+            <span class="legend-item" style="background-color: #FFF9C4; color: #F57F17; border: 2px solid #F57F17;">
+                Religion
+            </span>
+            <span class="legend-item" style="background-color: #E0F7FA; color: #00838F; border: 2px solid #00838F;">
+                Science
+            </span>
+            <span class="legend-item" style="background-color: #E8EAF6; color: #303F9F; border: 2px solid #303F9F;">
+                Science Fiction
+            </span>
+            <span class="legend-item" style="background-color: #FFF8E1; color: #FF8F00; border: 2px solid #FF8F00;">
+                Self-Help
+            </span>
+            <span class="legend-item" style="background-color: #E3F2FD; color: #0D47A1; border: 2px solid #0D47A1;">
+                Sports
+            </span>
+            <span class="legend-item" style="background-color: #FCE4EC; color: #C2185B; border: 2px solid #C2185B;">
+                Thriller
+            </span>
+            <span class="legend-item" style="background-color: #FFEBEE; color: #B71C1C; border: 2px solid #B71C1C;">
+                True Crime
+            </span>
+        </div>
+        
+        <div class="sort-controls">
+            <button class="sort-btn active" data-sort="genre">Sort by Genre</button>
+            <button class="sort-btn" data-sort="rating-desc">Highest Rated</button>
+            <button class="sort-btn" data-sort="rating-asc">Lowest Rated</button>
+            <button class="sort-btn" data-sort="title">Alphabetical</button>
+            <button class="sort-btn" data-sort="winners">🏆 Winners First</button>
+        </div>
+        
+        <table id="bookTable">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Title</th>
+                    <th>Author</th>
+                    <th>Nominated By</th>
+                    <th>Genre</th>
+                    <th>Goodreads Rating</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Populated by JavaScript -->
+            </tbody>
+        </table>
+        
+        <div class="footer">
+            <p>Data extracted from books discussed in book club emails</p>
+            <p>Ratings sourced from Goodreads.com • Click book titles to view on Goodreads</p>
+        </div>
+    </div>
+    <script>
+    const bookData = [
+        {"title": "Scalia Speaks: Reflections on Law, Faith, and Life Well Lived", "author": "Antonin Scalia", "genre": "Biography", "rating": 4.23, "goodreads_url": "https://www.goodreads.com/book/show/34964905-scalia-speaks", "mention_count": 4, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Benjamin Franklin: An American Life", "author": "Walter Isaacson", "genre": "Biography", "rating": 4.11, "goodreads_url": "https://www.goodreads.com/book/show/10883.Benjamin_Franklin", "mention_count": 7, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Never Split the Difference", "author": "Chris Voss", "genre": "Business", "rating": 4.36, "goodreads_url": "https://www.goodreads.com/book/show/26156469-never-split-the-difference", "mention_count": 14, "nominated_by": "Christine", "is_winner": true},
+        {"title": "Truth in Accounting", "author": "Kenneth MacNeal", "genre": "Business", "rating": 4.0, "goodreads_url": "https://www.goodreads.com/book/show/2697153-truth-in-accounting", "mention_count": 14, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Trust Me, I'm Lying", "author": "Ryan Holiday", "genre": "Business", "rating": 3.87, "goodreads_url": "https://www.goodreads.com/book/show/13588552-trust-me-i-m-lying", "mention_count": 7, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Little Prince", "author": "Antoine de Saint-Exupéry", "genre": "Classic", "rating": 4.31, "goodreads_url": "https://www.goodreads.com/book/show/157993.The_Little_Prince", "mention_count": 0, "nominated_by": "unknown", "is_winner": true},
+        {"title": "The Count of Monte Cristo", "author": "Alexandre Dumas", "genre": "Classic", "rating": 4.29, "goodreads_url": "https://www.goodreads.com/book/show/7126.The_Count_of_Monte_Cristo", "mention_count": 8, "nominated_by": "Chuck", "is_winner": true},
+        {"title": "To Kill a Mockingbird", "author": "Harper Lee", "genre": "Classic", "rating": 4.26, "goodreads_url": "https://www.goodreads.com/book/show/2657.To_Kill_a_Mockingbird", "mention_count": 9, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Wuthering Heights", "author": "Emily Bronte", "genre": "Classic", "rating": 3.87, "goodreads_url": "https://www.goodreads.com/book/show/6185.Wuthering_Heights", "mention_count": 12, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Treasure Island", "author": "Robert Louis Stevenson", "genre": "Classic", "rating": 3.86, "goodreads_url": "https://www.goodreads.com/book/show/295.Treasure_Island", "mention_count": 1, "nominated_by": "Chuck", "is_winner": false},
+        {"title": "The Old Man and the Sea", "author": "Ernest Hemingway", "genre": "Classic", "rating": 3.79, "goodreads_url": "https://www.goodreads.com/book/show/2165.The_Old_Man_and_the_Sea", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Great Expectations", "author": "Charles Dickens", "genre": "Classic", "rating": 3.78, "goodreads_url": "https://www.goodreads.com/book/show/2623.Great_Expectations", "mention_count": 12, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Jungle", "author": "Upton Sinclair", "genre": "Classic", "rating": 3.74, "goodreads_url": "https://www.goodreads.com/book/show/41681.The_Jungle", "mention_count": 7, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Turn of the Screw", "author": "Henry James", "genre": "Classic", "rating": 3.49, "goodreads_url": "https://www.goodreads.com/book/show/12948.The_Turn_of_the_Screw", "mention_count": 8, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Heart of Darkness", "author": "Joseph Conrad", "genre": "Classic", "rating": 3.43, "goodreads_url": "https://www.goodreads.com/book/show/4900.Heart_of_Darkness", "mention_count": 10, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Lion, the Witch and the Wardrobe", "author": "C.S. Lewis", "genre": "Fantasy", "rating": 4.12, "goodreads_url": "https://www.goodreads.com/book/show/100915.The_Lion_the_Witch_and_the_Wardrobe", "mention_count": 2, "nominated_by": "unknown", "is_winner": true},
+        {"title": "A Dirty Job", "author": "Christopher Moore", "genre": "Fantasy", "rating": 4.01, "goodreads_url": "https://www.goodreads.com/book/show/33456.A_Dirty_Job", "mention_count": 0, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Damsel", "author": "Elana K. Arnold", "genre": "Fantasy", "rating": 3.56, "goodreads_url": "https://www.goodreads.com/book/show/35686545-damsel", "mention_count": 16, "nominated_by": "unknown", "is_winner": false},
+        {"title": "James", "author": "Percival Everett", "genre": "Fiction", "rating": 4.5, "goodreads_url": "https://www.goodreads.com/book/show/123281614-james", "mention_count": 15, "nominated_by": "unknown", "is_winner": false},
+        {"title": "A Thousand Splendid Suns", "author": "Khaled Hosseini", "genre": "Fiction", "rating": 4.41, "goodreads_url": "https://www.goodreads.com/book/show/128029.A_Thousand_Splendid_Suns", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Art of Racing in the Rain", "author": "Garth Stein", "genre": "Fiction", "rating": 4.24, "goodreads_url": "https://www.goodreads.com/book/show/3153910-the-art-of-racing-in-the-rain", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Screwtape Letters", "author": "C.S. Lewis", "genre": "Fiction", "rating": 4.14, "goodreads_url": "https://www.goodreads.com/book/show/8130.The_Screwtape_Letters", "mention_count": 8, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Anxious People", "author": "Fredrik Backman", "genre": "Fiction", "rating": 4.1, "goodreads_url": "https://www.goodreads.com/book/show/49127718-anxious-people", "mention_count": 24, "nominated_by": "unknown", "is_winner": true},
+        {"title": "The Midnight Library", "author": "Matt Haig", "genre": "Fiction", "rating": 4.02, "goodreads_url": "https://www.goodreads.com/book/show/52578297-the-midnight-library", "mention_count": 17, "nominated_by": "unknown", "is_winner": true},
+        {"title": "The Stranger in the Lifeboat", "author": "Mitch Albom", "genre": "Fiction", "rating": 3.92, "goodreads_url": "https://www.goodreads.com/book/show/58085299-the-stranger-in-the-lifeboat", "mention_count": 7, "nominated_by": "Colleen", "is_winner": false},
+        {"title": "The Summer Guests", "author": "Mary Alice Monroe", "genre": "Fiction", "rating": 3.8, "goodreads_url": "https://www.goodreads.com/book/show/42875006-the-summer-guests", "mention_count": 0, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Mr. Penumbra's 24-Hour Bookstore", "author": "Robin Sloan", "genre": "Fiction", "rating": 3.79, "goodreads_url": "https://www.goodreads.com/book/show/13538873-mr-penumbra-s-24-hour-bookstore", "mention_count": 19, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Dragon Teeth", "author": "Michael Crichton", "genre": "Fiction", "rating": 3.67, "goodreads_url": "https://www.goodreads.com/book/show/32075854-dragon-teeth", "mention_count": 8, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Severance", "author": "Ling Ma", "genre": "Fiction", "rating": 3.61, "goodreads_url": "https://www.goodreads.com/book/show/36348525-severance", "mention_count": 11, "nominated_by": "Christine", "is_winner": false},
+        {"title": "Pirate Latitudes", "author": "Michael Crichton", "genre": "Fiction", "rating": 3.53, "goodreads_url": "https://www.goodreads.com/book/show/6438917-pirate-latitudes", "mention_count": 2, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Shakespeare Requirement", "author": "Julie Schumacher", "genre": "Fiction", "rating": 3.43, "goodreads_url": "https://www.goodreads.com/book/show/38190208-the-shakespeare-requirement", "mention_count": 24, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Song of Achilles", "author": "Madeline Miller", "genre": "Historical Fiction", "rating": 4.39, "goodreads_url": "https://www.goodreads.com/book/show/13623848-the-song-of-achilles", "mention_count": 5, "nominated_by": "Christine", "is_winner": false},
+        {"title": "A Gentleman in Moscow", "author": "Amor Towles", "genre": "Historical Fiction", "rating": 4.36, "goodreads_url": "https://www.goodreads.com/book/show/29430012-a-gentleman-in-moscow", "mention_count": 4, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Flight Portfolio", "author": "Julie Orringer", "genre": "Historical Fiction", "rating": 4.24, "goodreads_url": "https://www.goodreads.com/book/show/42853406-the-flight-portfolio", "mention_count": 1, "nominated_by": "Christine", "is_winner": false},
+        {"title": "Before We Were Yours", "author": "Lisa Wingate", "genre": "Historical Fiction", "rating": 4.21, "goodreads_url": "https://www.goodreads.com/book/show/32920226-before-we-were-yours", "mention_count": 28, "nominated_by": "Mom", "is_winner": false},
+        {"title": "The Lincoln Highway", "author": "Amor Towles", "genre": "Historical Fiction", "rating": 4.08, "goodreads_url": "https://www.goodreads.com/book/show/56783258-the-lincoln-highway", "mention_count": 0, "nominated_by": "unknown", "is_winner": true},
+        {"title": "The Water Dancer", "author": "Ta-Nehisi Coates", "genre": "Historical Fiction", "rating": 4.06, "goodreads_url": "https://www.goodreads.com/book/show/43982054-the-water-dancer", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Underground Railroad", "author": "Colson Whitehead", "genre": "Historical Fiction", "rating": 4.04, "goodreads_url": "https://www.goodreads.com/book/show/30555488-the-underground-railroad", "mention_count": 7, "nominated_by": "Christine", "is_winner": false},
+        {"title": "The Songhai Empire: Africa's Age of Gold", "author": "Unknown", "genre": "History", "rating": 4.5, "goodreads_url": "https://www.goodreads.com/book/show/53241658-the-songhai-empire", "mention_count": 2, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Midnight in Chernobyl", "author": "Adam Higginbotham", "genre": "History", "rating": 4.38, "goodreads_url": "https://www.goodreads.com/book/show/40538681-midnight-in-chernobyl", "mention_count": 16, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Splendid and the Vile", "author": "Erik Larson", "genre": "History", "rating": 4.32, "goodreads_url": "https://www.goodreads.com/book/show/50659467-the-splendid-and-the-vile", "mention_count": 10, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Band of Brothers", "author": "Stephen Ambrose", "genre": "History", "rating": 4.31, "goodreads_url": "https://www.goodreads.com/book/show/42389.Band_of_Brothers", "mention_count": 31, "nominated_by": "unknown", "is_winner": true},
+        {"title": "The Bedford Boys", "author": "Alex Kershaw", "genre": "History", "rating": 4.28, "goodreads_url": "https://www.goodreads.com/book/show/162889.The_Bedford_Boys", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Wager: A Tale of Shipwreck, Mutiny and Murder", "author": "David Grann", "genre": "History", "rating": 4.18, "goodreads_url": "https://www.goodreads.com/book/show/61714633-the-wager", "mention_count": 2, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Son of the Morning Star", "author": "Evan S. Connell", "genre": "History", "rating": 4.09, "goodreads_url": "https://www.goodreads.com/book/show/76657.Son_of_the_Morning_Star", "mention_count": 16, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Federalist Papers", "author": "Hamilton, Madison, Jay", "genre": "History", "rating": 4.08, "goodreads_url": "https://www.goodreads.com/book/show/110331.The_Federalist_Papers", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "To Rescue the Republic: Ulysses S. Grant, the Fragile Union, and the Crisis of 1876", "author": "Bret Baier and Catherine Whitney", "genre": "History", "rating": 4.07, "goodreads_url": "https://www.goodreads.com/book/show/56898171-to-rescue-the-republic", "mention_count": 8, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Code Girls", "author": "Liza Mundy", "genre": "History", "rating": 4.06, "goodreads_url": "https://www.goodreads.com/book/show/33369239-code-girls", "mention_count": 10, "nominated_by": "unknown", "is_winner": true},
+        {"title": "The Templars", "author": "Dan Jones", "genre": "History", "rating": 4.02, "goodreads_url": "https://www.goodreads.com/book/show/30841941-the-templars", "mention_count": 6, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Dead Wake", "author": "Erik Larson", "genre": "History", "rating": 4.01, "goodreads_url": "https://www.goodreads.com/book/show/22551730-dead-wake", "mention_count": 7, "nominated_by": "Brian", "is_winner": true},
+        {"title": "Devil in the White City", "author": "Erik Larson", "genre": "History", "rating": 4.01, "goodreads_url": "https://www.goodreads.com/book/show/21996.The_Devil_in_the_White_City", "mention_count": 1, "nominated_by": "unknown", "is_winner": true},
+        {"title": "The Lincoln Conspiracy", "author": "Brad Meltzer", "genre": "History", "rating": 3.93, "goodreads_url": "https://www.goodreads.com/book/show/50358143-the-lincoln-conspiracy", "mention_count": 29, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Freedom's Detective", "author": "Charles Lane", "genre": "History", "rating": 3.85, "goodreads_url": "https://www.goodreads.com/book/show/40538690-freedom-s-detective", "mention_count": 11, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Get Well Soon: History's Worst Plagues and the Heroes Who Fought Them", "author": "Jennifer Wright", "genre": "History", "rating": 3.77, "goodreads_url": "https://www.goodreads.com/book/show/30841984-get-well-soon", "mention_count": 0, "nominated_by": "unknown", "is_winner": true},
+        {"title": "The Bad-Ass Librarians of Timbuktu", "author": "Joshua Hammer", "genre": "History", "rating": 3.66, "goodreads_url": "https://www.goodreads.com/book/show/26892428-the-bad-ass-librarians-of-timbuktu", "mention_count": 8, "nominated_by": "unknown", "is_winner": true},
+        {"title": "A Short History of Drunkenness", "author": "Mark Forsyth", "genre": "History", "rating": 3.57, "goodreads_url": "https://www.goodreads.com/book/show/36952471-a-short-history-of-drunkenness", "mention_count": 17, "nominated_by": "unknown", "is_winner": false},
+        {"title": "On Writing: A Memoir of the Craft", "author": "Stephen King", "genre": "Memoir", "rating": 4.32, "goodreads_url": "https://www.goodreads.com/book/show/10569.On_Writing", "mention_count": 5, "nominated_by": "Colleen", "is_winner": false},
+        {"title": "The Way I Heard It", "author": "Mike Rowe", "genre": "Memoir", "rating": 4.28, "goodreads_url": "https://www.goodreads.com/book/show/43708599-the-way-i-heard-it", "mention_count": 23, "nominated_by": "unknown", "is_winner": true},
+        {"title": "As You Wish: Inconceivable Tales from the Making of The Princess Bride", "author": "Cary Elwes", "genre": "Memoir", "rating": 4.19, "goodreads_url": "https://www.goodreads.com/book/show/20821084-as-you-wish", "mention_count": 3, "nominated_by": "unknown", "is_winner": false},
+        {"title": "A Circle of Quiet", "author": "Madeleine L'Engle", "genre": "Memoir", "rating": 4.13, "goodreads_url": "https://www.goodreads.com/book/show/119424.A_Circle_of_Quiet", "mention_count": 3, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Desert Solitaire", "author": "Edward Abbey", "genre": "Memoir", "rating": 4.11, "goodreads_url": "https://www.goodreads.com/book/show/214614.Desert_Solitaire", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Penguin Lessons", "author": "Tom Michell", "genre": "Memoir", "rating": 3.96, "goodreads_url": "https://www.goodreads.com/book/show/25430358-the-penguin-lessons", "mention_count": 7, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Geography of Bliss", "author": "Eric Weiner", "genre": "Memoir", "rating": 3.63, "goodreads_url": "https://www.goodreads.com/book/show/1918305.The_Geography_of_Bliss", "mention_count": 7, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Your Table is Ready", "author": "Michael Cecchi-Azzolina", "genre": "Memoir", "rating": 3.49, "goodreads_url": "https://www.goodreads.com/book/show/59910124-your-table-is-ready", "mention_count": 2, "nominated_by": "Chuck", "is_winner": false},
+        {"title": "The Name of the Rose", "author": "Umberto Eco", "genre": "Mystery", "rating": 4.13, "goodreads_url": "https://www.goodreads.com/book/show/119073.The_Name_of_the_Rose", "mention_count": 1, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Death on the Nile", "author": "Agatha Christie", "genre": "Mystery", "rating": 4.07, "goodreads_url": "https://www.goodreads.com/book/show/131359.Death_on_the_Nile", "mention_count": 11, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Still Life", "author": "Louise Penny", "genre": "Mystery", "rating": 4.06, "goodreads_url": "https://www.goodreads.com/book/show/338691.Still_Life", "mention_count": 10, "nominated_by": "Chuck", "is_winner": false},
+        {"title": "A Thief of Time", "author": "Tony Hillerman", "genre": "Mystery", "rating": 3.99, "goodreads_url": "https://www.goodreads.com/book/show/19514.A_Thief_of_Time", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "A Line to Kill", "author": "Anthony Horowitz", "genre": "Mystery", "rating": 3.93, "goodreads_url": "https://www.goodreads.com/book/show/57681118-a-line-to-kill", "mention_count": 7, "nominated_by": "Brian", "is_winner": true},
+        {"title": "The House of Silk", "author": "Anthony Horowitz", "genre": "Mystery", "rating": 3.92, "goodreads_url": "https://www.goodreads.com/book/show/11146079-the-house-of-silk", "mention_count": 9, "nominated_by": "Chuck", "is_winner": true},
+        {"title": "The Word Is Murder", "author": "Anthony Horowitz", "genre": "Mystery", "rating": 3.89, "goodreads_url": "https://www.goodreads.com/book/show/35520564-the-word-is-murder", "mention_count": 9, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Skeleton Man", "author": "Tony Hillerman", "genre": "Mystery", "rating": 3.72, "goodreads_url": "https://www.goodreads.com/book/show/19514.Skeleton_Man", "mention_count": 9, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Anthropocene Reviewed", "author": "John Green", "genre": "Nonfiction", "rating": 4.26, "goodreads_url": "https://www.goodreads.com/book/show/55145261-the-anthropocene-reviewed", "mention_count": 7, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Chasing the Scream", "author": "Johann Hari", "genre": "Nonfiction", "rating": 4.17, "goodreads_url": "https://www.goodreads.com/book/show/22245552-chasing-the-scream", "mention_count": 8, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Dopesick", "author": "Beth Macy", "genre": "Nonfiction", "rating": 4.17, "goodreads_url": "https://www.goodreads.com/book/show/35068704-dopesick", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Box Office Poison", "author": "Unknown", "genre": "Nonfiction", "rating": 3.8, "goodreads_url": "https://www.goodreads.com/book/show/156423.Box_Office_Poison", "mention_count": 7, "nominated_by": "Chuck", "is_winner": false},
+        {"title": "Rust", "author": "Unknown", "genre": "Nonfiction", "rating": 3.8, "goodreads_url": "https://www.goodreads.com/book/show/18050143-rust", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Lifespan of a Fact", "author": "John D'Agata", "genre": "Nonfiction", "rating": 3.46, "goodreads_url": "https://www.goodreads.com/book/show/12197691-the-lifespan-of-a-fact", "mention_count": 10, "nominated_by": "Christine", "is_winner": false},
+        {"title": "The Case for Christ", "author": "Lee Strobel", "genre": "Religion", "rating": 4.01, "goodreads_url": "https://www.goodreads.com/book/show/204789.The_Case_for_Christ", "mention_count": 9, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Gene: An Intimate History", "author": "Siddhartha Mukherjee", "genre": "Science", "rating": 4.36, "goodreads_url": "https://www.goodreads.com/book/show/27276428-the-gene", "mention_count": 15, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Code Book", "author": "Simon Singh", "genre": "Science", "rating": 4.24, "goodreads_url": "https://www.goodreads.com/book/show/17994.The_Code_Book", "mention_count": 10, "nominated_by": "Chuck", "is_winner": false},
+        {"title": "Algorithms to Live By", "author": "Brian Christian", "genre": "Science", "rating": 4.12, "goodreads_url": "https://www.goodreads.com/book/show/25666050-algorithms-to-live-by", "mention_count": 12, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Molecule of More", "author": "Daniel Z. Lieberman", "genre": "Science", "rating": 4.09, "goodreads_url": "https://www.goodreads.com/book/show/39088592-the-molecule-of-more", "mention_count": 17, "nominated_by": "unknown", "is_winner": true},
+        {"title": "The Wild Trees", "author": "Richard Preston", "genre": "Science", "rating": 4.07, "goodreads_url": "https://www.goodreads.com/book/show/86471.The_Wild_Trees", "mention_count": 8, "nominated_by": "Chuck", "is_winner": false},
+        {"title": "Venomous", "author": "Christie Wilcox", "genre": "Science", "rating": 3.99, "goodreads_url": "https://www.goodreads.com/book/show/26530294-venomous", "mention_count": 5, "nominated_by": "unknown", "is_winner": false},
+        {"title": "How Not to Be Wrong", "author": "Jordan Ellenberg", "genre": "Science", "rating": 3.96, "goodreads_url": "https://www.goodreads.com/book/show/18693884-how-not-to-be-wrong", "mention_count": 12, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Secret Life of Plants", "author": "Peter Tompkins", "genre": "Science", "rating": 3.91, "goodreads_url": "https://www.goodreads.com/book/show/93935.The_Secret_Life_of_Plants", "mention_count": 6, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Generations", "author": "Jean Twenge", "genre": "Science", "rating": 3.82, "goodreads_url": "https://www.goodreads.com/book/show/62839783-generations", "mention_count": 6, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Apollo's Arrow", "author": "Nicholas Christakis", "genre": "Science", "rating": 3.76, "goodreads_url": "https://www.goodreads.com/book/show/54860446-apollo-s-arrow", "mention_count": 12, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Dune", "author": "Frank Herbert", "genre": "Science Fiction", "rating": 4.26, "goodreads_url": "https://www.goodreads.com/book/show/44767458-dune", "mention_count": 6, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Hitchhiker's Guide to the Galaxy", "author": "Douglas Adams", "genre": "Science Fiction", "rating": 4.22, "goodreads_url": "https://www.goodreads.com/book/show/386162.The_Hitchhiker_s_Guide_to_the_Galaxy", "mention_count": 3, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Three-Body Problem", "author": "Liu Cixin", "genre": "Science Fiction", "rating": 4.05, "goodreads_url": "https://www.goodreads.com/book/show/20518872-the-three-body-problem", "mention_count": 4, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Brave New World", "author": "Aldous Huxley", "genre": "Science Fiction", "rating": 3.99, "goodreads_url": "https://www.goodreads.com/book/show/5129.Brave_New_World", "mention_count": 1, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Storyworthy: Engage, Teach, Persuade, and Change Your Life through the Power of Storytelling", "author": "Matthew Dicks", "genre": "Self-Help", "rating": 4.26, "goodreads_url": "https://www.goodreads.com/book/show/37786022-storyworthy", "mention_count": 7, "nominated_by": "unknown", "is_winner": true},
+        {"title": "How to Win Friends and Influence People", "author": "Dale Carnegie", "genre": "Self-Help", "rating": 4.22, "goodreads_url": "https://www.goodreads.com/book/show/4865.How_to_Win_Friends_and_Influence_People", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Resisting Happiness", "author": "Matthew Kelly", "genre": "Self-Help", "rating": 4.1, "goodreads_url": "https://www.goodreads.com/book/show/29430725-resisting-happiness", "mention_count": 34, "nominated_by": "Mom", "is_winner": false},
+        {"title": "How to Be Perfect: The Correct Answer to Every Moral Question", "author": "Michael Schur", "genre": "Self-Help", "rating": 4.04, "goodreads_url": "https://www.goodreads.com/book/show/58085695-how-to-be-perfect", "mention_count": 7, "nominated_by": "Colleen", "is_winner": false},
+        {"title": "Make Your Bed", "author": "Admiral William H. McRaven", "genre": "Self-Help", "rating": 4.03, "goodreads_url": "https://www.goodreads.com/book/show/31423133-make-your-bed", "mention_count": 8, "nominated_by": "Brian", "is_winner": false},
+        {"title": "The Rise of Superman", "author": "Steven Kotler", "genre": "Self-Help", "rating": 3.96, "goodreads_url": "https://www.goodreads.com/book/show/18222878-the-rise-of-superman", "mention_count": 2, "nominated_by": "unknown", "is_winner": false},
+        {"title": "How to Fail at Almost Everything and Still Win Big", "author": "Scott Adams", "genre": "Self-Help", "rating": 3.96, "goodreads_url": "https://www.goodreads.com/book/show/17859574-how-to-fail-at-almost-everything-and-still-win-big", "mention_count": 1, "nominated_by": "Colleen", "is_winner": false},
+        {"title": "The Good Life Method", "author": "Meghan Sullivan", "genre": "Self-Help", "rating": 3.94, "goodreads_url": "https://www.goodreads.com/book/show/58145791-the-good-life-method", "mention_count": 13, "nominated_by": "Colleen", "is_winner": true},
+        {"title": "Grit: The Power of Passion and Perseverance", "author": "Angela Duckworth", "genre": "Self-Help", "rating": 3.94, "goodreads_url": "https://www.goodreads.com/book/show/27213329-grit", "mention_count": 4, "nominated_by": "Christine", "is_winner": false},
+        {"title": "Learned Optimism", "author": "Martin Seligman", "genre": "Self-Help", "rating": 3.89, "goodreads_url": "https://www.goodreads.com/book/show/26123.Learned_Optimism", "mention_count": 5, "nominated_by": "Colleen", "is_winner": false},
+        {"title": "If You're So Smart, Why Aren't You Happy?", "author": "Raj Raghunathan", "genre": "Self-Help", "rating": 3.86, "goodreads_url": "https://www.goodreads.com/book/show/27421482-if-you-re-so-smart-why-aren-t-you-happy", "mention_count": 22, "nominated_by": "unknown", "is_winner": false},
+        {"title": "How to Begin: Start Doing Something That Matters", "author": "Michael Bungay Stanier", "genre": "Self-Help", "rating": 3.86, "goodreads_url": "https://www.goodreads.com/book/show/58085186-how-to-begin", "mention_count": 4, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Magic Pill", "author": "Unknown", "genre": "Self-Help", "rating": 3.8, "goodreads_url": "https://www.goodreads.com/book/show/123206648-the-magic-pill", "mention_count": 5, "nominated_by": "unknown", "is_winner": false},
+        {"title": "You're Not Listening", "author": "Kate Murphy", "genre": "Self-Help", "rating": 3.79, "goodreads_url": "https://www.goodreads.com/book/show/45892276-you-re-not-listening", "mention_count": 7, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Loose Pucks", "author": "Unknown", "genre": "Sports", "rating": 4.5, "goodreads_url": "https://www.goodreads.com/search?q=loose+pucks", "mention_count": 7, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Captain Class", "author": "Sam Walker", "genre": "Sports", "rating": 4.08, "goodreads_url": "https://www.goodreads.com/book/show/31869155-the-captain-class", "mention_count": 7, "nominated_by": "unknown", "is_winner": false},
+        {"title": "K: A History of Baseball in Ten Pitches", "author": "Tyler Kepner", "genre": "Sports", "rating": 4.05, "goodreads_url": "https://www.goodreads.com/book/show/40538695-k", "mention_count": 39, "nominated_by": "Brian", "is_winner": false},
+        {"title": "The Promise", "author": "Robert Crais", "genre": "Thriller", "rating": 4.18, "goodreads_url": "https://www.goodreads.com/book/show/45022803-the-promise", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Watchman", "author": "Robert Crais", "genre": "Thriller", "rating": 4.12, "goodreads_url": "https://www.goodreads.com/book/show/81462.The_Watchman", "mention_count": 16, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Executive Orders", "author": "Tom Clancy", "genre": "Thriller", "rating": 4.08, "goodreads_url": "https://www.goodreads.com/book/show/5902.Executive_Orders", "mention_count": 0, "nominated_by": "unknown", "is_winner": false},
+        {"title": "The Lincoln Lawyer", "author": "Michael Connelly", "genre": "Thriller", "rating": 4.04, "goodreads_url": "https://www.goodreads.com/book/show/79885.The_Lincoln_Lawyer", "mention_count": 16, "nominated_by": "Brian", "is_winner": false},
+        {"title": "The Woman in the Window", "author": "A.J. Finn", "genre": "Thriller", "rating": 3.98, "goodreads_url": "https://www.goodreads.com/book/show/40389527-the-woman-in-the-window", "mention_count": 8, "nominated_by": "Christine", "is_winner": true},
+        {"title": "The Guest List", "author": "Lucy Foley", "genre": "Thriller", "rating": 3.8, "goodreads_url": "https://www.goodreads.com/book/show/50485500-the-guest-list", "mention_count": 23, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Airframe", "author": "Michael Crichton", "genre": "Thriller", "rating": 3.79, "goodreads_url": "https://www.goodreads.com/book/show/7659.Airframe", "mention_count": 5, "nominated_by": "unknown", "is_winner": false},
+        {"title": "Killers of the Flower Moon", "author": "David Grann", "genre": "True Crime", "rating": 4.12, "goodreads_url": "https://www.goodreads.com/book/show/29496076-killers-of-the-flower-moon", "mention_count": 4, "nominated_by": "unknown", "is_winner": false},
+        {"title": "In Cold Blood", "author": "Truman Capote", "genre": "True Crime", "rating": 4.07, "goodreads_url": "https://www.goodreads.com/book/show/168642.In_Cold_Blood", "mention_count": 12, "nominated_by": "unknown", "is_winner": true},
+        {"title": "Body of Proof: The 7 Best Reasons to Believe in the Resurrection of Jesus--and Why It Matters Today", "author": "Jeremiah J. Johnston", "genre": "Religion", "rating": 4.45, "goodreads_url": "https://www.goodreads.com/book/show/57343712-body-of-proof", "nominated_by": "—", "is_winner": false},
+        {"title": "A Walk in the Woods", "author": "Bill Bryson", "genre": "Memoir", "rating": 4.07, "goodreads_url": "https://www.goodreads.com/book/show/9791.A_Walk_in_the_Woods", "nominated_by": "—", "is_winner": false},
+        {"title": "In Five Years", "author": "Rebecca Serle", "genre": "Fiction", "rating": 3.89, "goodreads_url": "https://www.goodreads.com/book/show/50093704-in-five-years", "nominated_by": "—", "is_winner": false},
+        {"title": "When Breath Becomes Air", "author": "Paul Kalanithi", "genre": "Memoir", "rating": 4.37, "goodreads_url": "https://www.goodreads.com/book/show/25899336-when-breath-becomes-air", "nominated_by": "—", "is_winner": false},
+        {"title": "How to Test Negative for Stupid", "author": "John Kennedy", "genre": "Nonfiction", "rating": 3.90, "goodreads_url": "#", "nominated_by": "—", "is_winner": false},
+        {"title": "The Know-It-All", "author": "A. J. Jacobs", "genre": "Nonfiction", "rating": 3.76, "goodreads_url": "https://www.goodreads.com/book/show/5541.The_Know_It_All", "nominated_by": "—", "is_winner": false},
+        {"title": "Alone at Dawn", "author": "Dan Schilling", "genre": "History", "rating": 4.49, "goodreads_url": "https://www.goodreads.com/book/show/36373425-alone-at-dawn", "nominated_by": "—", "is_winner": false},
+        {"title": "The 52 Greatest Stories of the Bible", "author": "Kenneth Boa", "genre": "Religion", "rating": 4.20, "goodreads_url": "#", "nominated_by": "—", "is_winner": false},
+        {"title": "My Friends", "author": "Fredrik Backman", "genre": "Fiction", "rating": 4.30, "goodreads_url": "#", "nominated_by": "—", "is_winner": false},
+        {"title": "The Problem of Pain", "author": "C.S. Lewis", "genre": "Religion", "rating": 4.10, "goodreads_url": "https://www.goodreads.com/book/show/17343.The_Problem_of_Pain", "nominated_by": "—", "is_winner": false},
+        {"title": "How to Fail at Almost Everything and Still Win Big", "author": "Scott Adams", "genre": "Self-Help", "rating": 3.98, "goodreads_url": "#", "nominated_by": "—", "is_winner": false},
+        {"title": "Charlotte's Web", "author": "E. B. White", "genre": "Classic", "rating": 4.19, "goodreads_url": "https://www.goodreads.com/book/show/24178.Charlotte_s_Web", "nominated_by": "—", "is_winner": false},
+        {"title": "Woman Down", "author": "Colleen Hoover", "genre": "Fiction", "rating": 4.10, "goodreads_url": "#", "nominated_by": "—", "is_winner": false}
+    ];
+
+    const genreColors = {
+        Biography: {bg: "#E0F2F1", text: "#00695C", border: "#00695C"},
+        Business: {bg: "#ECEFF1", text: "#455A64", border: "#455A64"},
+        Classic: {bg: "#EFEBE9", text: "#5D4037", border: "#5D4037"},
+        Fantasy: {bg: "#EDE7F6", text: "#512DA8", border: "#512DA8"},
+        Fiction: {bg: "#E3F2FD", text: "#1565C0", border: "#1565C0"},
+        "Historical Fiction": {bg: "#FFF3E0", text: "#E65100", border: "#E65100"},
+        History: {bg: "#E8F5E9", text: "#2E7D32", border: "#2E7D32"},
+        Memoir: {bg: "#F1F8E9", text: "#558B2F", border: "#558B2F"},
+        Mystery: {bg: "#F3E5F5", text: "#7B1FA2", border: "#7B1FA2"},
+        Nonfiction: {bg: "#FAFAFA", text: "#424242", border: "#424242"},
+        Religion: {bg: "#FFF9C4", text: "#F57F17", border: "#F57F17"},
+        Science: {bg: "#E0F7FA", text: "#00838F", border: "#00838F"},
+        "Science Fiction": {bg: "#E8EAF6", text: "#303F9F", border: "#303F9F"},
+        "Self-Help": {bg: "#FFF8E1", text: "#FF8F00", border: "#FF8F00"},
+        Sports: {bg: "#E3F2FD", text: "#0D47A1", border: "#0D47A1"},
+        Thriller: {bg: "#FCE4EC", text: "#C2185B", border: "#C2185B"},
+        "True Crime": {bg: "#FFEBEE", text: "#B71C1C", border: "#B71C1C"}
+    };
+
+    function stars(r) {
+        const full = Math.floor(r);
+        const half = (r - full) >= 0.4;
+        return "&#9733;".repeat(full) + (half ? "&#189;" : "") + "&#9734;".repeat(5 - full - (half ? 1 : 0));
+    }
+
+    function ratingColor(r) {
+        if (r >= 4.3) return "#2E7D32";
+        if (r >= 4.0) return "#558B2F";
+        if (r >= 3.7) return "#F9A825";
+        return "#FF8F00";
+    }
+
+    function render(data) {
+        document.querySelector('#bookTable tbody').innerHTML = data.map((b, i) => {
+            const c = genreColors[b.genre] || genreColors.Nonfiction;
+            return `<tr class="${b.is_winner ? 'winner-row' : ''}">
+                <td>${i + 1}</td>
+                <td class="title" style="background:${c.bg};border-left:4px solid ${c.border}">
+                    ${b.is_winner ? '<span class="trophy">🏆</span> ' : ''}
+                    <a href="${b.goodreads_url}" target="_blank" style="color:${c.text};${b.is_winner ? 'text-decoration:line-through' : ''}">
+                        ${b.title}
+                    </a>
+                </td>
+                <td>${b.author}</td>
+                <td>${b.nominated_by || '—'}</td>
+                <td style="background:${c.bg};color:${c.text}">${b.genre}</td>
+                <td>
+                    <span style="color:${ratingColor(b.rating)}">${b.rating.toFixed(2)}</span>
+                    <span class="stars" style="color:${ratingColor(b.rating)}">${stars(b.rating)}</span>
+                </td>
+            </tr>`;
+        }).join("");
+        updateStats(data);
+    }
+
+    function updateStats(data) {
+        document.querySelector('.stats').innerHTML = `
+            <div class="stat-item">
+                <div class="stat-number">${data.length}</div>
+                <div class="stat-label">Total Books</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number">${data.filter(b => b.is_winner).length}</div>
+                <div class="stat-label">🏆 Read</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number">${new Set(data.map(b => b.genre)).size}</div>
+                <div class="stat-label">Genres</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number">${(data.reduce((s, b) => s + b.rating, 0) / data.length).toFixed(2)}</div>
+                <div class="stat-label">Avg Rating</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number">${Math.max(...data.map(b => b.rating)).toFixed(2)}</div>
+                <div class="stat-label">Highest Rated</div>
+            </div>
+        `;
+    }
+
+    document.querySelectorAll('.sort-btn').forEach(btn => {
+        btn.onclick = () => {
+            document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            let sorted = [...bookData];
+            switch (btn.dataset.sort) {
+                case 'rating-desc': sorted.sort((a, b) => b.rating - a.rating); break;
+                case 'rating-asc': sorted.sort((a, b) => a.rating - b.rating); break;
+                case 'title': sorted.sort((a, b) => a.title.localeCompare(b.title)); break;
+                case 'winners': sorted.sort((a, b) => b.is_winner - a.is_winner); break;
+                default: sorted.sort((a, b) => a.genre.localeCompare(b.genre) || b.rating - a.rating);
+            }
+            render(sorted);
+        };
+    });
+
+    render(bookData);
+    </script>
+</body>
+</html>

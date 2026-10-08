@@ -371,7 +371,7 @@ class LLMAnalyzer:
                 'granite3.2-vision', # Granite vision models
                 'cogvlm',          # CogVLM models
                 'pixtral',         # Pixtral models
-                'gemma3',          # Gemma3 has vision capabilities (some variants are dual-use)
+                'gemma',          # Gemma has vision capabilities (some variants are dual-use)
                 'llama4'           # Llama4 multimodal models (some variants are dual-use)
             ]
             # Models that are known to be dual-use (text + vision) — include them here as well
@@ -805,33 +805,120 @@ class LLMAnalyzer:
             logging.debug("Identity could not be determined, returning Unknown")
             return "Unknown"
     
+    # Month name regex shared by the textual date patterns below.
+    _DATE_MONTH_RE = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*'
+
+    # (kind, regex) pairs used to find candidate dates in document text.
+    # Each regex's captured groups are parsed by _parse_date_match() below.
+    _DATE_PATTERNS = [
+        ('mdy', r'\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b'),               # MM/DD/YYYY
+        ('ymd', r'\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b'),                 # YYYY/MM/DD
+        ('month_dd_yyyy', rf'{_DATE_MONTH_RE}\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s+(\d{{4}})'),  # Month DD, YYYY
+        ('dd_month_yyyy', rf'(\d{{1,2}})\s+{_DATE_MONTH_RE}\.?,?\s+(\d{{4}})'),  # DD Month YYYY
+    ]
+
+    # Context phrases (checked immediately before a candidate date) that mark
+    # it as the document's real/applicable date. Higher score wins when
+    # several dates are present (e.g. alongside an unrelated date of birth).
+    _DATE_LABEL_SCORES = [
+        (3, (
+            r'date\s*(?:/|and)?\s*time\s*collected', r'collect(?:ed|ion)\s*date',
+            r'specimen\s*(?:collected|date)', r'date\s*of\s*service', r'service\s*date',
+            r'date\s*(?:of\s*)?(?:test|exam|visit|report|performed)',
+            r'(?:test|exam|visit|report)\s*date', r'date\s*reported',
+            r'transaction\s*date', r'statement\s*date', r'invoice\s*date', r'bill(?:ing)?\s*date',
+            r'date\s*issued', r'issue\s*date', r'effective\s*date',
+            r'date\s*signed', r'signed\s*date', r'pay(?:roll)?\s*date',
+        )),
+        (1, (r'\bdate\b',)),  # generic/unlabeled "Date:" still beats no label at all
+    ]
+
+    # Context phrases that mark a nearby date as NOT the applicable document
+    # date (e.g. a patient's date of birth). Matches near these are skipped.
+    _DATE_EXCLUDE_LABELS = (
+        r'date\s*of\s*birth', r'\bdob\b', r'birth\s*date', r'birthdate', r'\bborn\b',
+    )
+
+    @classmethod
+    def _parse_date_match(cls, kind, groups):
+        """Convert a regex match's groups into a datetime, or None if invalid."""
+        try:
+            if kind == 'mdy':
+                month, day, year = groups
+                month, day, year = int(month), int(day), int(year)
+                if year < 100:
+                    year += 2000 if year < 70 else 1900
+                if month > 12 and day <= 12:
+                    month, day = day, month
+                return datetime(year, month, day)
+            elif kind == 'ymd':
+                year, month, day = groups
+                return datetime(int(year), int(month), int(day))
+            elif kind == 'month_dd_yyyy':
+                month_name, day, year = groups
+                month = datetime.strptime(month_name[:3], '%b').month
+                return datetime(int(year), month, int(day))
+            elif kind == 'dd_month_yyyy':
+                day, month_name, year = groups
+                month = datetime.strptime(month_name[:3], '%b').month
+                return datetime(int(year), month, int(day))
+        except (ValueError, TypeError):
+            return None
+        return None
+
+    def _find_best_text_date(self, text):
+        """
+        Scan document text for date-like matches and return the one most
+        likely to be the document's applicable date, based on nearby context
+        labels (e.g. "Date Collected", "Date of Service"). Dates associated
+        with a date of birth ("Date of Birth", "DOB", ...) are ignored.
+        """
+        best_score = None
+        best_position = None
+        best_date = None
+
+        for kind, pattern in self._DATE_PATTERNS:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                date_obj = self._parse_date_match(kind, match.groups())
+                if date_obj is None:
+                    continue
+
+                # Only look at the current line's text before the match, so a
+                # label on a previous line (e.g. "Date of Birth: ...") doesn't
+                # bleed into an unrelated date that follows on the next line.
+                line_start = text.rfind('\n', 0, match.start()) + 1
+                context = text[line_start:match.start()].lower()
+
+                if any(re.search(label, context) for label in self._DATE_EXCLUDE_LABELS):
+                    continue
+
+                score = 0
+                for label_score, labels in self._DATE_LABEL_SCORES:
+                    if any(re.search(label, context) for label in labels):
+                        score = label_score
+                        break
+
+                # Prefer higher score; on a tie prefer the earliest occurrence
+                # (labels/dates near the top of a document are usually the
+                # primary one, e.g. the report header date).
+                if best_score is None or score > best_score or (
+                        score == best_score and match.start() < best_position):
+                    best_score, best_position, best_date = score, match.start(), date_obj
+
+        return best_date
+
     def _extract_date(self, text, filename, creation_date):
         """
         Extract the document date in order of priority:
-        1. Transaction/generation date in the document
+        1. Contextually-labeled date in the document text (e.g. "Date
+           Collected", "Date of Service"), ignoring any date of birth
         2. Date in the filename
         3. File creation date
         """
-        # Try to find date in document text
-        date_patterns = [
-            r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})',  # MM/DD/YYYY or DD/MM/YYYY
-            r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})',    # YYYY/MM/DD
-            r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* (\d{1,2})(?:st|nd|rd|th)?,? (\d{4})',  # Month DD, YYYY
-            r'(\d{1,2}) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* (\d{4})'  # DD Month YYYY
-        ]
-        
-        for pattern in date_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                # Process the first match (this is simplistic and might need refinement)
-                try:
-                    # This is a simplified approach - would need to be expanded based on which pattern matched
-                    date_str = '/'.join([str(x) for x in matches[0] if x])
-                    date_obj = datetime.strptime(date_str, '%m/%d/%Y')
-                    return date_obj.strftime('%Y-%m-%d')
-                except:
-                    pass
-        
+        text_date = self._find_best_text_date(text)
+        if text_date is not None:
+            return text_date.strftime('%Y-%m-%d')
+
         # Try to find date in filename
         filename_date_pattern = r'(\d{4})[-_]?(\d{1,2})[-_]?(\d{1,2})'
         filename_matches = re.search(filename_date_pattern, filename)
@@ -840,9 +927,9 @@ class LLMAnalyzer:
                 year, month, day = filename_matches.groups()
                 date_obj = datetime(int(year), int(month), int(day))
                 return date_obj.strftime('%Y-%m-%d')
-            except:
+            except ValueError:
                 pass
-        
+
         # Use file creation date as fallback
         return creation_date.strftime('%Y-%m-%d')
     

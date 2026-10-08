@@ -21,3 +21,8 @@ test_output/*
 file_actions_log.json
 recipes.py
 recipes2.txt
+vision_evaluation/evaluation_results/*
+vision_evaluation/evaluation_results_photo/*
+vision_evaluation/logs/*
+vision_evaluation/ocr_results/*
+vision_evaluation/temperature_optimization_results/*

@@ -120,6 +120,9 @@ class VisionModelEvaluator:
         judge_model: str = "gpt-oss:120b",
         request_timeout: int = 120,
         default_num_ctx: int = 131072,
+        provider: str = "ollama",
+        openrouter_api_key: Optional[str] = None,
+        openrouter_base_url: str = "https://openrouter.ai/api/v1",
     ):
         """
         Initialize the evaluator.
@@ -127,7 +130,11 @@ class VisionModelEvaluator:
         Args:
             ollama_base_url: URL of the Ollama server
             judge_model: Model to use for LLM-as-a-judge evaluations
+            provider: "ollama" or "openrouter"
         """
+        self.provider = provider
+        self.openrouter_api_key = openrouter_api_key
+        self.openrouter_base_url = openrouter_base_url
         self.ollama_base_url = ollama_base_url
         self.judge_model = judge_model
         self.judge_llm = None
@@ -176,6 +183,15 @@ class VisionModelEvaluator:
     def _initialize_judge_llm(self):
         """Initialize the LLM-as-a-judge model."""
         try:
+            if self.provider == "openrouter":
+                from openrouter_models import create_chat_model
+                self.judge_llm = create_chat_model(
+                    self.judge_model, temperature=0.1, max_tokens=256,
+                    timeout=self.request_timeout, base_url=self.openrouter_base_url,
+                    api_key=self.openrouter_api_key,
+                )
+                logger.info(f"OpenRouter judge LLM initialized with model: {self.judge_model}")
+                return
             judge_kwargs = {
                 "model": self.judge_model,
                 "temperature": 0.1,
@@ -337,6 +353,9 @@ class VisionModelEvaluator:
             List of vision model names
         """
         try:
+            if self.provider == "openrouter":
+                from openrouter_models import fetch_free_vision_models
+                return fetch_free_vision_models(self.openrouter_base_url, api_key=self.openrouter_api_key)
             response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=10)
             response.raise_for_status()
             models = response.json().get("models", [])
@@ -430,8 +449,15 @@ class VisionModelEvaluator:
         model_lower = model_name.lower()
         return 'qwen' in model_lower or 'qwq' in model_lower
     
-    def _create_vision_llm(self, model_name: str, temperature: float = 0.0) -> ChatOllama:
-        """Create a ChatOllama instance with model-specific hyperparameters."""
+    def _create_vision_llm(self, model_name: str, temperature: float = 0.0):
+        """Create a chat client (Ollama or OpenRouter) with model-specific hyperparameters."""
+        if self.provider == "openrouter":
+            from openrouter_models import create_chat_model
+            return create_chat_model(
+                model_name, temperature=temperature, max_tokens=1024,
+                timeout=self.request_timeout, base_url=self.openrouter_base_url,
+                api_key=self.openrouter_api_key,
+            )
         common_kwargs = {
             "model": model_name,
             "temperature": temperature,
@@ -510,7 +536,7 @@ Be thorough and systematic in your transcription."""
                         content=[
                             {
                                 "type": "image_url",
-                                "image_url": f"data:{mime_type};base64,{image_b64}"
+                                "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}
                             },
                             {
                                 "type": "text",
@@ -876,7 +902,15 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
         
         return composite
     
-    def evaluate_all_models(self, pdf_path: str, ground_truth_path: str, output_dir: str = "evaluation_results") -> EvaluationSummary:
+    def evaluate_all_models(
+        self,
+        pdf_path: str,
+        ground_truth_path: str,
+        output_dir: str = "evaluation_results",
+        models: Optional[List[str]] = None,
+        progress_callback=None,
+        should_cancel=None,
+    ) -> EvaluationSummary:
         """
         Evaluate all available vision models.
         
@@ -908,24 +942,48 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
         
         try:
             # Discover vision models
-            vision_models = self.discover_vision_models()
+            vision_models = models if models else self.discover_vision_models()
             if not vision_models:
                 raise RuntimeError("No vision-capable models found")
+
+            total_steps = len(vision_models) * 2
+            step = 0
+
+            def report(message: str):
+                if progress_callback:
+                    progress_callback(step, total_steps, message)
+
+            def cancelled() -> bool:
+                return bool(should_cancel and should_cancel())
 
             # Phase 1: Run all vision model extractions first (no judge model calls)
             partial_results = []
             for model_name in vision_models:
+                if cancelled():
+                    break
+                report(f"Extracting text with {model_name}")
                 result = self.evaluate_model(model_name, image_paths, ground_truth, judge_llm=True)
                 partial_results.append(result)
+                step += 1
+                report(f"Finished extraction: {model_name}")
+
+            if not partial_results:
+                raise RuntimeError("Evaluation cancelled")
 
             # Phase 2: Run all judge model evaluations in a batch (minimize model swap)
+            step = len(vision_models)
             for result in partial_results:
+                report(f"Judging {result.model_name}")
+                step += 1
                 if result.error_message:
                     result.semantic_similarity = 0.0
                 else:
                     clean_extracted = self._clean_text_for_comparison(result.extracted_text)
                     clean_ground_truth = self._clean_text_for_comparison(ground_truth)
                     result.semantic_similarity = self.calculate_semantic_similarity(clean_ground_truth, clean_extracted)
+
+            step = total_steps
+            report("Evaluation complete")
 
             # Calculate composite scores and rank models
             model_scores = [(result.model_name, self.calculate_composite_score(result)) for result in partial_results]
@@ -1081,17 +1139,37 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
 def main():
     """Main CLI interface."""
     parser = argparse.ArgumentParser(description="Evaluate vision models for handwritten text extraction")
-    parser.add_argument("pdf_path", help="Path to the PDF file to evaluate")
-    parser.add_argument("ground_truth_path", help="Path to the ground truth text file")
+    parser.add_argument("pdf_path", nargs="?", help="Path to the PDF file to evaluate")
+    parser.add_argument("ground_truth_path", nargs="?", help="Path to the ground truth text file")
+    parser.add_argument("--cloud", action="store_true", help="Automatically evaluate all free Ollama cloud vision models found online")
+    parser.add_argument("--gui", action="store_true", help="Launch the model selection GUI")
     parser.add_argument("--output-dir", default="evaluation_results", help="Output directory for results")
     parser.add_argument("--ollama-url", default="http://localhost:11434", help="Ollama server URL")
-    parser.add_argument("--judge-model", default="gpt-oss:120b", help="Model to use for LLM-as-a-judge")
+    parser.add_argument("--judge-model", default=None, help="Model to use for LLM-as-a-judge (default: gpt-oss:120b, or openai/gpt-oss-120b:free with --provider openrouter)")
+    parser.add_argument("--provider", choices=["ollama", "openrouter"], default="ollama", help="Model provider")
+    parser.add_argument("--openrouter-api-key", default=None, help="OpenRouter API key (default: OPENROUTER_API_KEY env var)")
+    parser.add_argument("--list-openrouter-free", action="store_true", help="List free OpenRouter vision models and exit")
     parser.add_argument("--models", nargs="+", help="Specific models to test (if not provided, all vision models will be tested)")
     parser.add_argument("--request-timeout", type=int, default=120, help="Per-request timeout in seconds")
     parser.add_argument("--num-ctx", type=int, default=131072, help="Default context window cap for model requests")
     
     args = parser.parse_args()
-    
+
+    if args.list_openrouter_free:
+        from openrouter_models import fetch_free_vision_models
+        print("\n".join(fetch_free_vision_models(api_key=args.openrouter_api_key)))
+        return 0
+
+    if args.judge_model is None:
+        args.judge_model = "openai/gpt-oss-120b:free" if args.provider == "openrouter" else "gpt-oss:120b"
+
+    if args.gui:
+        from evaluation_gui import run_gui
+        return run_gui(args)
+
+    if not args.pdf_path or not args.ground_truth_path:
+        parser.error("pdf_path and ground_truth_path are required unless --gui is used")
+
     # Validate input files
     if not os.path.exists(args.pdf_path):
         print(f"Error: PDF file '{args.pdf_path}' not found")
@@ -1108,9 +1186,20 @@ def main():
             judge_model=args.judge_model,
             request_timeout=max(10, args.request_timeout),
             default_num_ctx=max(262144, args.num_ctx),
+            provider=args.provider,
+            openrouter_api_key=args.openrouter_api_key,
         )
         
         # Override model discovery if specific models requested
+        if args.cloud and not args.models:
+            if args.provider == "openrouter":
+                from openrouter_models import fetch_free_vision_models
+                args.models = fetch_free_vision_models(api_key=args.openrouter_api_key)
+            else:
+                from ollama_cloud_models import fetch_free_cloud_vision_models
+                args.models = fetch_free_cloud_vision_models(args.ollama_url)
+            print(f"Free cloud vision models found: {args.models}")
+
         if args.models:
             # Strip stray commas that occur when the user passes comma-separated
             # values with spaces (e.g. --models a, b, c) in the shell.

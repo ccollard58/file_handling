@@ -27,7 +27,7 @@ logging.basicConfig(
 )
 
 class CategoryAnalyzer:
-    def __init__(self, source_dir, sample_size=1000):
+    def __init__(self, source_dir, sample_size=10000):
         """Initialize the category analyzer."""
         self.source_dir = source_dir
         self.sample_size = sample_size

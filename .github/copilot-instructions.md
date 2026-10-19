@@ -3,7 +3,7 @@
 - **use the virtual environment in .venv**
 - **use powershell syntax when utilizing the terminal**
 - **Qwen models require specific hyperparameters**: `top_p=0.8, top_k=20, min_p=0.0`
-- **use pyqt7 for GUI development**
+- **use pyqt6 for GUI development**
 - **follow PEP 8 guidelines for Python code style**
 - **use the latest version of langchain for building language model applications**
 - **use the ChatOllama class for interacting with a large language model**

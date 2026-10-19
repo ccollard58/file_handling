@@ -26,3 +26,4 @@ vision_evaluation/evaluation_results_photo/*
 vision_evaluation/logs/*
 vision_evaluation/ocr_results/*
 vision_evaluation/temperature_optimization_results/*
+vision_evaluation/__pycache__/*

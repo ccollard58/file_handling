@@ -123,6 +123,9 @@ class VisionModelEvaluator:
         provider: str = "ollama",
         openrouter_api_key: Optional[str] = None,
         openrouter_base_url: str = "https://openrouter.ai/api/v1",
+        tokenharbor_api_key: Optional[str] = None,
+        ollama_api_key: Optional[str] = None,
+        nvidia_api_key: Optional[str] = None,
     ):
         """
         Initialize the evaluator.
@@ -130,9 +133,12 @@ class VisionModelEvaluator:
         Args:
             ollama_base_url: URL of the Ollama server
             judge_model: Model to use for LLM-as-a-judge evaluations
-            provider: "ollama" or "openrouter"
+            provider: "ollama", "openrouter", "tokenharbor" or "nvidia"
         """
         self.provider = provider
+        self.ollama_api_key = ollama_api_key or os.environ.get("OLLAMA_API_KEY")
+        self.tokenharbor_api_key = tokenharbor_api_key
+        self.nvidia_api_key = nvidia_api_key or os.environ.get("NVIDIA_API_KEY")
         self.openrouter_api_key = openrouter_api_key
         self.openrouter_base_url = openrouter_base_url
         self.ollama_base_url = ollama_base_url
@@ -166,6 +172,12 @@ class VisionModelEvaluator:
             if os.path.exists(path):
                 return path
         return None
+
+    def _ollama_headers(self) -> Dict[str, str]:
+        """Return Ollama Cloud authentication headers when a key is configured."""
+        if self.ollama_api_key:
+            return {"Authorization": f"Bearer {self.ollama_api_key}"}
+        return {}
     
     def _check_dependencies(self):
         """Check if required dependencies are available."""
@@ -183,14 +195,9 @@ class VisionModelEvaluator:
     def _initialize_judge_llm(self):
         """Initialize the LLM-as-a-judge model."""
         try:
-            if self.provider == "openrouter":
-                from openrouter_models import create_chat_model
-                self.judge_llm = create_chat_model(
-                    self.judge_model, temperature=0.1, max_tokens=256,
-                    timeout=self.request_timeout, base_url=self.openrouter_base_url,
-                    api_key=self.openrouter_api_key,
-                )
-                logger.info(f"OpenRouter judge LLM initialized with model: {self.judge_model}")
+            if self.provider in ("openrouter", "tokenharbor", "nvidia"):
+                self.judge_llm = self._create_remote_llm(self.judge_model, 0.1, 256)
+                logger.info(f"{self.provider} judge LLM initialized with model: {self.judge_model}")
                 return
             judge_kwargs = {
                 "model": self.judge_model,
@@ -198,9 +205,18 @@ class VisionModelEvaluator:
                 "base_url": self.ollama_base_url,
                 "num_ctx": self._resolve_num_ctx(self.judge_model),
                 "num_predict": 256,
-                "client_kwargs": {"timeout": self.request_timeout},
-                "sync_client_kwargs": {"timeout": self.request_timeout},
-                "async_client_kwargs": {"timeout": self.request_timeout},
+                "client_kwargs": {
+                    "timeout": self.request_timeout,
+                    "headers": self._ollama_headers(),
+                },
+                "sync_client_kwargs": {
+                    "timeout": self.request_timeout,
+                    "headers": self._ollama_headers(),
+                },
+                "async_client_kwargs": {
+                    "timeout": self.request_timeout,
+                    "headers": self._ollama_headers(),
+                },
             }
             if self._is_qwen_model(self.judge_model):
                 judge_kwargs.update({"top_p": 0.8, "top_k": 20, "min_p": 0.0})
@@ -237,8 +253,9 @@ class VisionModelEvaluator:
         fallback_ctx = max(262144, self.default_num_ctx)
         try:
             response = requests.post(
-                f"{self.ollama_base_url}/api/show",
+                f"{self.ollama_base_url.rstrip('/')}/api/show",
                 json={"model": model_name},
+                headers=self._ollama_headers(),
                 timeout=10,
             )
             response.raise_for_status()
@@ -347,7 +364,7 @@ class VisionModelEvaluator:
     
     def discover_vision_models(self) -> List[str]:
         """
-        Discover all available vision-capable models in Ollama.
+        Discover available vision-capable models for the selected provider.
         
         Returns:
             List of vision model names
@@ -356,6 +373,12 @@ class VisionModelEvaluator:
             if self.provider == "openrouter":
                 from openrouter_models import fetch_free_vision_models
                 return fetch_free_vision_models(self.openrouter_base_url, api_key=self.openrouter_api_key)
+            if self.provider == "tokenharbor":
+                from tokenharbor_models import fetch_vision_models
+                return [m.model_id for m in fetch_vision_models(api_key=self.tokenharbor_api_key)]
+            if self.provider == "nvidia":
+                from nvidia_models import fetch_vision_models
+                return [m.model_id for m in fetch_vision_models(api_key=self.nvidia_api_key)]
             response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=10)
             response.raise_for_status()
             models = response.json().get("models", [])
@@ -443,30 +466,78 @@ class VisionModelEvaluator:
         """Convert an image file to base64 encoded string."""
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode("utf-8")
+
+    def _describe_provider_error(self, model_name: str, error: Exception) -> str:
+        """Add provider-specific recovery guidance to access errors."""
+        message = str(error)
+        status_code = getattr(error, "status_code", None)
+        if status_code is None:
+            response = getattr(error, "response", None)
+            status_code = getattr(response, "status_code", None)
+
+        is_forbidden = status_code == 403 or re.search(
+            r"\b403\b|forbidden|authorization failed", message, re.IGNORECASE
+        )
+        if self.provider == "nvidia" and is_forbidden:
+            model_page = f"https://build.nvidia.com/{model_name}"
+            return (
+                f"NVIDIA denied access to {model_name} (403 Forbidden). Open the model page "
+                f"while signed into the NVIDIA account that owns the API key and accept any "
+                f"third-party model terms (Acknowledge & Continue), then retry. If you have "
+                f"already accepted, confirm the NVIDIA API key is active and belongs to that "
+                f"account. Model page: {model_page}. Original error: {message}"
+            )
+        return message
     
     def _is_qwen_model(self, model_name: str) -> bool:
         """Check if model is a Qwen model requiring special hyperparameters."""
         model_lower = model_name.lower()
         return 'qwen' in model_lower or 'qwq' in model_lower
     
-    def _create_vision_llm(self, model_name: str, temperature: float = 0.0):
-        """Create a chat client (Ollama or OpenRouter) with model-specific hyperparameters."""
-        if self.provider == "openrouter":
-            from openrouter_models import create_chat_model
+    def _create_remote_llm(self, model_name: str, temperature: float, max_tokens: int):
+        """Create a chat client for one of the remote model providers."""
+        if self.provider == "nvidia":
+            from nvidia_models import create_chat_model
             return create_chat_model(
-                model_name, temperature=temperature, max_tokens=1024,
-                timeout=self.request_timeout, base_url=self.openrouter_base_url,
-                api_key=self.openrouter_api_key,
+                model_name, temperature=temperature, max_tokens=max_tokens,
+                timeout=self.request_timeout, api_key=self.nvidia_api_key,
             )
+        if self.provider == "tokenharbor":
+            from tokenharbor_models import create_chat_model
+            return create_chat_model(
+                model_name, temperature=temperature, max_tokens=max_tokens,
+                timeout=self.request_timeout, api_key=self.tokenharbor_api_key,
+            )
+        from openrouter_models import create_chat_model
+        return create_chat_model(
+            model_name, temperature=temperature, max_tokens=max_tokens,
+            timeout=self.request_timeout, base_url=self.openrouter_base_url,
+            api_key=self.openrouter_api_key,
+        )
+
+    def _create_vision_llm(self, model_name: str, temperature: float = 0.0):
+        """Create a chat client (Ollama, OpenRouter or Token Harbor) with model-specific hyperparameters."""
+        if self.provider in ("openrouter", "tokenharbor", "nvidia"):
+            max_tokens = 16384 if self.provider == "nvidia" else 1024
+            return self._create_remote_llm(model_name, temperature, max_tokens)
         common_kwargs = {
             "model": model_name,
             "temperature": temperature,
             "base_url": self.ollama_base_url,
             "num_ctx": self._resolve_num_ctx(model_name),
             "num_predict": 1024,
-            "client_kwargs": {"timeout": self.request_timeout},
-            "sync_client_kwargs": {"timeout": self.request_timeout},
-            "async_client_kwargs": {"timeout": self.request_timeout},
+            "client_kwargs": {
+                "timeout": self.request_timeout,
+                "headers": self._ollama_headers(),
+            },
+            "sync_client_kwargs": {
+                "timeout": self.request_timeout,
+                "headers": self._ollama_headers(),
+            },
+            "async_client_kwargs": {
+                "timeout": self.request_timeout,
+                "headers": self._ollama_headers(),
+            },
         }
 
         if self._is_qwen_model(model_name):
@@ -480,7 +551,13 @@ class VisionModelEvaluator:
             )
         return ChatOllama(**common_kwargs)
     
-    def extract_text_with_vision_model(self, model_name: str, image_paths: List[str], temperature: float = 0.0) -> Tuple[str, float]:
+    def extract_text_with_vision_model(
+        self,
+        model_name: str,
+        image_paths: List[str],
+        temperature: float = 0.0,
+        page_errors: Optional[List[str]] = None,
+    ) -> Tuple[str, float]:
         """
         Extract text from images using a specific vision model.
         
@@ -585,7 +662,10 @@ Be thorough and systematic in your transcription."""
                 
                 except Exception as e:
                     logger.error(f"Error processing page {i+1} with model {model_name}: {e}")
-                    extracted_text += f"=== Page {i+1} ===\n[Error processing page: {str(e)}]\n\n"
+                    error_message = self._describe_provider_error(model_name, e)
+                    if page_errors is not None:
+                        page_errors.append(f"Page {i+1}: {error_message}")
+                    extracted_text += f"=== Page {i+1} ===\n[Error processing page: {error_message}]\n\n"
             
             execution_time = (datetime.now() - start_time).total_seconds()
             logger.info(f"Model {model_name} completed extraction in {execution_time:.2f} seconds")
@@ -751,7 +831,10 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
         
         try:
             # Extract text using the vision model with specified temperature
-            extracted_text, execution_time = self.extract_text_with_vision_model(model_name, image_paths, temperature)
+            page_errors = []
+            extracted_text, execution_time = self.extract_text_with_vision_model(
+                model_name, image_paths, temperature, page_errors
+            )
             if extracted_text.startswith("[Error:"):
                 return EvaluationResult(
                     model_name=model_name,
@@ -781,6 +864,7 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
                 character_accuracy=char_accuracy,
                 semantic_similarity=semantic_sim,
                 execution_time=execution_time,
+                error_message="\n".join(page_errors) or None,
                 temperature=temperature
             )
             logger.info(f"Model {model_name} - Char Accuracy: {char_accuracy:.3f}, WER: {wer:.3f}")
@@ -1141,14 +1225,19 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate vision models for handwritten text extraction")
     parser.add_argument("pdf_path", nargs="?", help="Path to the PDF file to evaluate")
     parser.add_argument("ground_truth_path", nargs="?", help="Path to the ground truth text file")
-    parser.add_argument("--cloud", action="store_true", help="Automatically evaluate all free Ollama cloud vision models found online")
+    parser.add_argument("--cloud", action="store_true", help="Automatically evaluate free vision models discovered for the selected provider")
     parser.add_argument("--gui", action="store_true", help="Launch the model selection GUI")
     parser.add_argument("--output-dir", default="evaluation_results", help="Output directory for results")
     parser.add_argument("--ollama-url", default="http://localhost:11434", help="Ollama server URL")
-    parser.add_argument("--judge-model", default=None, help="Model to use for LLM-as-a-judge (default: gpt-oss:120b, or openai/gpt-oss-120b:free with --provider openrouter)")
-    parser.add_argument("--provider", choices=["ollama", "openrouter"], default="ollama", help="Model provider")
+    parser.add_argument("--judge-model", default=None, help="Model to use for LLM-as-a-judge (default: gpt-oss:120b; openai/gpt-oss-120b:free with --provider openrouter; mimo-v2.6-flash:free with --provider tokenharbor; z-ai/glm5 with --provider nvidia)")
+    parser.add_argument("--provider", choices=["ollama", "openrouter", "tokenharbor", "nvidia"], default="ollama", help="Model provider")
+    parser.add_argument("--ollama-api-key", default=None, help="Ollama Cloud API key (default: OLLAMA_API_KEY env var)")
     parser.add_argument("--openrouter-api-key", default=None, help="OpenRouter API key (default: OPENROUTER_API_KEY env var)")
+    parser.add_argument("--tokenharbor-api-key", default=None, help="Token Harbor API key (default: TOKENHARBOR_API_KEY env var)")
+    parser.add_argument("--nvidia-api-key", default=None, help="NVIDIA API key (default: NVIDIA_API_KEY env var)")
     parser.add_argument("--list-openrouter-free", action="store_true", help="List free OpenRouter vision models and exit")
+    parser.add_argument("--list-tokenharbor-free", action="store_true", help="List free Token Harbor vision models and exit")
+    parser.add_argument("--list-nvidia-free", action="store_true", help="List NVIDIA API Catalog vision models and exit")
     parser.add_argument("--models", nargs="+", help="Specific models to test (if not provided, all vision models will be tested)")
     parser.add_argument("--request-timeout", type=int, default=120, help="Per-request timeout in seconds")
     parser.add_argument("--num-ctx", type=int, default=131072, help="Default context window cap for model requests")
@@ -1160,8 +1249,22 @@ def main():
         print("\n".join(fetch_free_vision_models(api_key=args.openrouter_api_key)))
         return 0
 
+    if args.list_tokenharbor_free:
+        from tokenharbor_models import fetch_vision_models
+        print("\n".join(m.model_id for m in fetch_vision_models(api_key=args.tokenharbor_api_key)))
+        return 0
+
+    if args.list_nvidia_free:
+        from nvidia_models import fetch_vision_models
+        print("\n".join(m.model_id for m in fetch_vision_models(api_key=args.nvidia_api_key)))
+        return 0
+
     if args.judge_model is None:
-        args.judge_model = "openai/gpt-oss-120b:free" if args.provider == "openrouter" else "gpt-oss:120b"
+        args.judge_model = {
+            "openrouter": "openai/gpt-oss-120b:free",
+            "tokenharbor": "mimo-v2.6-flash:free",
+            "nvidia": "z-ai/glm5",
+        }.get(args.provider, "gpt-oss:120b")
 
     if args.gui:
         from evaluation_gui import run_gui
@@ -1187,7 +1290,10 @@ def main():
             request_timeout=max(10, args.request_timeout),
             default_num_ctx=max(262144, args.num_ctx),
             provider=args.provider,
+            ollama_api_key=args.ollama_api_key,
             openrouter_api_key=args.openrouter_api_key,
+            tokenharbor_api_key=args.tokenharbor_api_key,
+            nvidia_api_key=args.nvidia_api_key,
         )
         
         # Override model discovery if specific models requested
@@ -1195,9 +1301,17 @@ def main():
             if args.provider == "openrouter":
                 from openrouter_models import fetch_free_vision_models
                 args.models = fetch_free_vision_models(api_key=args.openrouter_api_key)
+            elif args.provider == "tokenharbor":
+                from tokenharbor_models import fetch_vision_models
+                args.models = [m.model_id for m in fetch_vision_models(api_key=args.tokenharbor_api_key)]
+            elif args.provider == "nvidia":
+                from nvidia_models import fetch_vision_models
+                args.models = [m.model_id for m in fetch_vision_models(api_key=args.nvidia_api_key)]
             else:
                 from ollama_cloud_models import fetch_free_cloud_vision_models
-                args.models = fetch_free_cloud_vision_models(args.ollama_url)
+                args.models = fetch_free_cloud_vision_models(
+                    args.ollama_url, api_key=args.ollama_api_key
+                )
             print(f"Free cloud vision models found: {args.models}")
 
         if args.models:

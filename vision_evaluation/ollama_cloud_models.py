@@ -1,8 +1,9 @@
 """Discover free, vision-capable Ollama cloud models listed on ollama.com."""
 
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
-from typing import List
+from typing import List, Optional
 
 import requests
 
@@ -46,13 +47,20 @@ def fetch_cloud_vision_models(timeout: int = 20) -> List[str]:
     return models
 
 
-def is_model_usable(model: str, ollama_url: str, timeout: int = 60) -> bool:
+def is_model_usable(
+    model: str,
+    ollama_url: str,
+    timeout: int = 60,
+    api_key: Optional[str] = None,
+) -> bool:
     """Probe a model with a one-token request through the Ollama server.
 
     ollama.com does not publish which plan a model belongs to, but the server
     answers 402 for models outside the Free plan (and 400/403 for models that
     cannot be used), so only a 200 response counts as free and usable.
     """
+    api_key = api_key or os.environ.get("OLLAMA_API_KEY")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         response = requests.post(
             f"{ollama_url.rstrip('/')}/api/chat",
@@ -62,6 +70,7 @@ def is_model_usable(model: str, ollama_url: str, timeout: int = 60) -> bool:
                 "stream": False,
                 "options": {"num_predict": 1},
             },
+            headers=headers,
             timeout=timeout,
         )
     except requests.RequestException:
@@ -70,14 +79,21 @@ def is_model_usable(model: str, ollama_url: str, timeout: int = 60) -> bool:
 
 
 def fetch_free_cloud_vision_models(
-    ollama_url: str = "http://localhost:11434", timeout: int = 20
+    ollama_url: str = "http://localhost:11434",
+    timeout: int = 20,
+    api_key: Optional[str] = None,
 ) -> List[str]:
     """Return cloud vision models that the Ollama server accepts on the Free plan."""
     candidates = fetch_cloud_vision_models(timeout)
     if not candidates:
         return []
     with ThreadPoolExecutor(max_workers=4) as pool:
-        usable = list(pool.map(lambda m: is_model_usable(m, ollama_url), candidates))
+        usable = list(
+            pool.map(
+                lambda m: is_model_usable(m, ollama_url, api_key=api_key),
+                candidates,
+            )
+        )
     return [model for model, ok in zip(candidates, usable) if ok]
 
 

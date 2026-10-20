@@ -1,24 +1,57 @@
-"""PyQt6 GUI for selecting Ollama cloud vision models, running the
-handwriting evaluation, and viewing progress and results."""
+"""PyQt6 GUI for selecting cloud vision models, running the evaluation,
+and viewing progress and results."""
 
 import sys
 from typing import Callable, List
 
-from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QSettings, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QGridLayout, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ollama_cloud_models import fetch_free_cloud_vision_models
-from openrouter_models import fetch_free_vision_models
+from openrouter_models import fetch_vision_models as fetch_openrouter_models
+from tokenharbor_models import fetch_vision_models as fetch_tokenharbor_models
+from nvidia_models import fetch_vision_models as fetch_nvidia_models
 
 RESULT_COLUMNS = [
     "Rank", "Model", "Composite", "Char Acc", "Semantic", "WER",
     "Levenshtein", "Time (s)", "Error",
 ]
+
+PROVIDER_LABELS = {
+    "ollama": "Ollama", "openrouter": "OpenRouter", "tokenharbor": "Token Harbor",
+    "nvidia": "NVIDIA",
+}
+PAID_CAPABLE = ("openrouter", "tokenharbor")
+DEFAULT_JUDGES = {
+    "ollama": "gpt-oss:120b",
+    "openrouter": "openai/gpt-oss-120b:free",
+    "tokenharbor": "mimo-v2.6-flash:free",
+    "nvidia": "z-ai/glm5",
+}
+DEFAULTS = {
+    "pdf": "", "truth": "", "output_dir": "evaluation_results",
+    "ollama_url": "http://localhost:11434", "provider": "ollama",
+    "include_paid": True,
+}
+
+
+def new_settings() -> QSettings:
+    return QSettings("file_handling", "VisionEvaluationGUI")
+
+
+def resolve_setting(settings: QSettings, key: str, cli_value, default):
+    """A non-default command-line value wins; otherwise use the saved value."""
+    if cli_value not in (None, default):
+        return cli_value
+    saved = settings.value(key, default)
+    if isinstance(default, bool):
+        return saved if isinstance(saved, bool) else str(saved).lower() == "true"
+    return saved if saved not in (None, "") else default
 
 
 class TaskWorker(QObject):
@@ -64,7 +97,10 @@ def make_evaluation_task(pdf, truth, out_dir, url, judge, models: List[str],
 
         evaluator = VisionModelEvaluator(
             ollama_base_url=url, judge_model=judge, provider=provider,
-            openrouter_api_key=api_key or None,
+            ollama_api_key=api_key or None if provider == "ollama" else None,
+            openrouter_api_key=api_key or None if provider == "openrouter" else None,
+            tokenharbor_api_key=api_key or None if provider == "tokenharbor" else None,
+            nvidia_api_key=api_key or None if provider == "nvidia" else None,
         )
         return evaluator.evaluate_all_models(
             pdf, truth, out_dir, models=models,
@@ -74,33 +110,76 @@ def make_evaluation_task(pdf, truth, out_dir, url, judge, models: List[str],
     return task
 
 
-def make_fetch_task(ollama_url: str, provider: str = "ollama", api_key: str = ""):
+def make_fetch_task(
+    ollama_url: str,
+    provider: str = "ollama",
+    api_key: str = "",
+    include_paid: bool = False,
+):
     if provider == "openrouter":
-        return lambda worker: fetch_free_vision_models(api_key=api_key or None)
-    return lambda worker: fetch_free_cloud_vision_models(ollama_url)
+        return lambda worker: fetch_openrouter_models(
+            api_key=api_key or None, include_paid=include_paid
+        )
+    if provider == "tokenharbor":
+        return lambda worker: fetch_tokenharbor_models(
+            api_key=api_key or None, include_paid=include_paid
+        )
+    if provider == "nvidia":
+        return lambda worker: fetch_nvidia_models(api_key=api_key or None)
+    return lambda worker: fetch_free_cloud_vision_models(
+        ollama_url, api_key=api_key or None
+    )
 
 
 class MainWindow(QMainWindow):
     def __init__(self, args=None):
         super().__init__()
-        self.setWindowTitle("Ollama Cloud Vision Model Evaluation")
+        self.setWindowTitle("Cloud Vision Model Evaluation")
         self.resize(1100, 800)
         self._thread = None
         self._worker = None
+        self._running = set()
+        self._fetch_id = 0
 
-        self.pdf_edit = QLineEdit(getattr(args, "pdf_path", None) or "")
-        self.truth_edit = QLineEdit(getattr(args, "ground_truth_path", None) or "")
-        self.out_edit = QLineEdit(getattr(args, "output_dir", None) or "evaluation_results")
-        self.url_edit = QLineEdit(getattr(args, "ollama_url", None) or "http://localhost:11434")
-        self.judge_edit = QLineEdit(getattr(args, "judge_model", None) or "gpt-oss:120b")
+        self._settings = new_settings()
+
+        def setting(key, arg_name, default):
+            return resolve_setting(self._settings, key, getattr(args, arg_name, None), default)
+
+        provider = setting("provider", "provider", DEFAULTS["provider"])
+        if provider not in DEFAULT_JUDGES:
+            provider = DEFAULTS["provider"]
+        self._provider = provider
+
+        self.pdf_edit = QLineEdit(setting("pdf", "pdf_path", DEFAULTS["pdf"]))
+        self.truth_edit = QLineEdit(setting("truth", "ground_truth_path", DEFAULTS["truth"]))
+        self.out_edit = QLineEdit(setting("output_dir", "output_dir", DEFAULTS["output_dir"]))
+        self.url_edit = QLineEdit(setting("ollama_url", "ollama_url", DEFAULTS["ollama_url"]))
+        self.judge_edit = QLineEdit(
+            resolve_setting(
+                self._settings, f"judge/{provider}", getattr(args, "judge_model", None),
+                DEFAULT_JUDGES[provider],
+            )
+        )
         self.provider_combo = QComboBox()
-        self.provider_combo.addItems(["ollama", "openrouter"])
-        self.provider_combo.setCurrentText(getattr(args, "provider", None) or "ollama")
-        self.key_edit = QLineEdit(getattr(args, "openrouter_api_key", None) or "")
+        self.provider_combo.addItems(list(PROVIDER_LABELS))
+        self.provider_combo.setCurrentText(provider)
+        # One API key per provider; the key field edits the current provider's key.
+        self._keys = {
+            name: setting(f"{name}_key", f"{name}_api_key", "")
+            for name in PROVIDER_LABELS
+        }
+        self.key_edit = QLineEdit(self._keys.get(provider, ""))
         self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key_edit.setPlaceholderText("OpenRouter API key (or OPENROUTER_API_KEY env var)")
+        self.key_label = QLabel()
+        self.include_paid_checkbox = QCheckBox()
+        self.include_paid_checkbox.setChecked(
+            resolve_setting(self._settings, "include_paid", None, DEFAULTS["include_paid"])
+        )
+        self.include_paid_checkbox.toggled.connect(self._on_include_paid_changed)
         self.model_list = QListWidget()
-        self.refresh_btn = QPushButton("Refresh from ollama.com")
+        self.refresh_btn = QPushButton()
+        self._apply_provider_labels(provider)
         self.all_btn = QPushButton("Select all")
         self.none_btn = QPushButton("Select none")
         self.run_btn = QPushButton("Run evaluation")
@@ -112,6 +191,7 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget(0, len(RESULT_COLUMNS))
         self.table.setHorizontalHeaderLabels(RESULT_COLUMNS)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setWordWrap(True)
         self.table.horizontalHeader().setStretchLastSection(True)
 
         self._build_layout()
@@ -126,11 +206,60 @@ class MainWindow(QMainWindow):
     def _api_key(self) -> str:
         return self.key_edit.text().strip()
 
+    def _apply_provider_labels(self, provider: str) -> None:
+        label = PROVIDER_LABELS[provider]
+        env_var = f"{provider.upper()}_API_KEY"
+        self.key_label.setText(f"{label} key")
+        self.key_edit.setPlaceholderText(f"{label} API key (or {env_var} env var)")
+        self.key_edit.setEnabled(True)
+        if provider == "ollama":
+            self.url_edit.setToolTip(
+                "Use https://ollama.com for direct Ollama Cloud API access, or keep "
+                "http://localhost:11434 for your local Ollama server."
+            )
+        else:
+            self.url_edit.setToolTip("")
+        self.include_paid_checkbox.setText(f"Show paid {label} vision models")
+        self.include_paid_checkbox.setVisible(provider in PAID_CAPABLE)
+        source = {
+            "ollama": "ollama.com", "openrouter": "openrouter.ai",
+            "tokenharbor": "tokenharbor.ai", "nvidia": "build.nvidia.com",
+        }
+        self.refresh_btn.setText(f"Refresh from {source[provider]}")
+
     def _on_provider_changed(self, provider: str) -> None:
-        self.judge_edit.setText(
-            "openai/gpt-oss-120b:free" if provider == "openrouter" else "gpt-oss:120b"
-        )
+        # Each provider remembers its own judge model and API key.
+        self._settings.setValue(f"judge/{self._provider}", self.judge_edit.text().strip())
+        self._keys[self._provider] = self.key_edit.text().strip()
+        self._provider = provider
+        saved = self._settings.value(f"judge/{provider}", DEFAULT_JUDGES[provider])
+        self.judge_edit.setText(saved or DEFAULT_JUDGES[provider])
+        self.key_edit.setText(self._keys.get(provider, ""))
+        self._apply_provider_labels(provider)
         self.refresh_models()
+
+    def _on_include_paid_changed(self, _checked: bool) -> None:
+        if self.provider_combo.currentText() in PAID_CAPABLE:
+            self.refresh_models()
+
+    def save_settings(self) -> None:
+        s = self._settings
+        s.setValue("pdf", self.pdf_edit.text().strip())
+        s.setValue("truth", self.truth_edit.text().strip())
+        s.setValue("output_dir", self.out_edit.text().strip())
+        s.setValue("ollama_url", self.url_edit.text().strip())
+        provider = self.provider_combo.currentText()
+        s.setValue("provider", provider)
+        self._keys[provider] = self.key_edit.text().strip()
+        for name, key in self._keys.items():
+            s.setValue(f"{name}_key", key)
+        s.setValue("include_paid", self.include_paid_checkbox.isChecked())
+        s.setValue(f"judge/{provider}", self.judge_edit.text().strip())
+        s.sync()
+
+    def closeEvent(self, event) -> None:
+        self.save_settings()
+        super().closeEvent(event)
 
     def _build_layout(self) -> None:
         settings = QGroupBox("Inputs")
@@ -140,22 +269,23 @@ class MainWindow(QMainWindow):
             ("Ground truth", self.truth_edit, "txt"),
             ("Output dir", self.out_edit, "dir"),
             ("Provider", self.provider_combo, None),
-            ("OpenRouter key", self.key_edit, None),
+            (self.key_label, self.key_edit, None),
             ("Ollama URL", self.url_edit, None),
             ("Judge model", self.judge_edit, None),
         ]):
-            grid.addWidget(QLabel(label), row, 0)
+            grid.addWidget(label if isinstance(label, QLabel) else QLabel(label), row, 0)
             grid.addWidget(edit, row, 1)
             if browse:
                 button = QPushButton("Browse...")
                 button.clicked.connect(lambda _=False, e=edit, k=browse: self._browse(e, k))
                 grid.addWidget(button, row, 2)
 
-        models_box = QGroupBox("Free Ollama cloud vision models (check to evaluate)")
+        models_box = QGroupBox("Free cloud vision models (check to evaluate)")
         models_layout = QVBoxLayout(models_box)
         buttons = QHBoxLayout()
         for button in (self.refresh_btn, self.all_btn, self.none_btn):
             buttons.addWidget(button)
+        buttons.addWidget(self.include_paid_checkbox)
         buttons.addStretch()
         models_layout.addLayout(buttons)
         models_layout.addWidget(self.model_list)
@@ -211,43 +341,88 @@ class MainWindow(QMainWindow):
 
     def _selected_models(self) -> List[str]:
         return [
-            self.model_list.item(i).text()
+            self.model_list.item(i).data(Qt.ItemDataRole.UserRole)
+            or self.model_list.item(i).text()
             for i in range(self.model_list.count())
             if self.model_list.item(i).checkState() == Qt.CheckState.Checked
         ]
 
     def _launch(self, task, on_done, on_fail, on_progress=None) -> None:
-        self._thread, self._worker = start_worker(self, task)
-        self._worker.finished.connect(on_done)
-        self._worker.failed.connect(on_fail)
+        thread, worker = start_worker(self, task)
+        self._thread, self._worker = thread, worker
+        # Keep running threads referenced so a newer launch cannot destroy them.
+        self._running.add(thread)
+        thread.finished.connect(lambda t=thread: self._running.discard(t))
+        worker.finished.connect(on_done)
+        worker.failed.connect(on_fail)
         if on_progress:
-            self._worker.progress.connect(on_progress)
-        self._thread.start()
+            worker.progress.connect(on_progress)
+        thread.start()
 
     def refresh_models(self) -> None:
+        provider = self.provider_combo.currentText()
+        self._fetch_id += 1
+        fetch_id = self._fetch_id
+        self.model_list.clear()
         self._set_busy(True)
         self.cancel_btn.setEnabled(False)
-        self.status.setText("Fetching free vision models...")
+        include_paid = (
+            provider in PAID_CAPABLE and self.include_paid_checkbox.isChecked()
+        )
+        listing = (
+            "vision models" if include_paid else f"free {provider} vision models"
+        )
+        self.status.setText(f"Fetching {listing}...")
         self._launch(
-            make_fetch_task(self.url_edit.text().strip(), self.provider_combo.currentText(), self._api_key()),
-            self._on_models,
-            self._on_models_failed,
+            make_fetch_task(
+                self.url_edit.text().strip(),
+                provider,
+                self._api_key(),
+                include_paid=include_paid,
+            ),
+            lambda models: fetch_id == self._fetch_id and self._on_models(models, provider),
+            lambda msg: fetch_id == self._fetch_id and self._on_models_failed(msg),
         )
 
-    def _on_models(self, models: List[str]) -> None:
+    def _on_models(self, models, provider: str) -> None:
         self.model_list.clear()
-        for name in models:
+        free_count = 0
+        paid_count = 0
+        for model in models:
+            if hasattr(model, "display_name"):
+                name = model.display_name
+                model_id = model.model_id
+                is_free = model.is_free
+                free_count += int(is_free)
+                paid_count += int(not is_free)
+            else:
+                name = model
+                model_id = model
+                is_free = True
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
+            item.setData(Qt.ItemDataRole.UserRole, model_id)
+            item.setData(Qt.ItemDataRole.UserRole + 1, is_free)
+            item.setCheckState(
+                Qt.CheckState.Checked if is_free else Qt.CheckState.Unchecked
+            )
             self.model_list.addItem(item)
         if not models:
-            self.status.setText("No free Ollama cloud vision models are currently advertised")
-            self._log("No free Ollama cloud vision models are currently advertised.")
+            self.status.setText(f"No {provider} vision models are currently available")
+            self._log(f"No {provider} vision models are currently available.")
             self.run_btn.setEnabled(False)
         else:
-            self.status.setText(f"Found {len(models)} free cloud vision models")
-            self._log(f"Discovered {len(models)} free cloud vision models")
+            if provider in PAID_CAPABLE:
+                label = PROVIDER_LABELS[provider]
+                self.status.setText(
+                    f"Found {free_count} free and {paid_count} paid {label} vision models"
+                )
+                self._log(
+                    f"Discovered {free_count} free and {paid_count} paid {label} vision models"
+                )
+            else:
+                self.status.setText(f"Found {len(models)} free {provider} vision models")
+                self._log(f"Discovered {len(models)} free {provider} vision models")
             self.run_btn.setEnabled(True)
         self._set_busy(False)
 
@@ -257,13 +432,36 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
 
     def run_evaluation(self) -> None:
-        models = self._selected_models()
+        selected_items = [
+            self.model_list.item(i)
+            for i in range(self.model_list.count())
+            if self.model_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        models = [
+            item.data(Qt.ItemDataRole.UserRole) or item.text()
+            for item in selected_items
+        ]
         pdf, truth = self.pdf_edit.text().strip(), self.truth_edit.text().strip()
         if not models:
             QMessageBox.warning(self, "No models", "Select at least one model.")
             return
         if not pdf or not truth:
             QMessageBox.warning(self, "Missing input", "Choose a PDF and a ground truth file.")
+            return
+        paid_models = [
+            item.data(Qt.ItemDataRole.UserRole) or item.text()
+            for item in selected_items
+            if item.data(Qt.ItemDataRole.UserRole + 1) is False
+        ]
+        if paid_models and QMessageBox.question(
+            self,
+            f"Paid {PROVIDER_LABELS[self.provider_combo.currentText()]} models selected",
+            "The selected paid models may incur charges:\n\n"
+            + "\n".join(paid_models)
+            + "\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
             return
         self.table.setRowCount(0)
         self.progress.setValue(0)
@@ -304,8 +502,13 @@ class MainWindow(QMainWindow):
                 r.error_message or "",
             ]
             for col, value in enumerate(values):
-                self.table.setItem(row, col, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if col == len(RESULT_COLUMNS) - 1 and value:
+                    item.setToolTip(value)
+                self.table.setItem(row, col, item)
         self.table.resizeColumnsToContents()
+        self.table.setColumnWidth(len(RESULT_COLUMNS) - 1, 360)
+        self.table.resizeRowsToContents()
         self.status.setText(f"Done. Best: {summary.best_model} ({summary.best_score:.3f})")
         self._log("Evaluation complete; results saved to the output directory")
         self._set_busy(False)

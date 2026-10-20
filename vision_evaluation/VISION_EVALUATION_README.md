@@ -1,10 +1,11 @@
 # Vision Model Evaluation System for Handwritten Text Extraction
 
-This system provides automated evaluation of multiple vision-capable LLMs running via Ollama, specifically assessing their ability to extract handwritten text from multi-page scanned documents (PDFs with embedded images). The evaluation process leverages an LLM-as-a-judge framework to benchmark model performance against ground truth.
+This system evaluates vision-capable LLMs from Ollama, OpenRouter, Token Harbor, and NVIDIA on handwritten text extraction from multi-page PDFs. It compares transcriptions against ground truth using text metrics and an LLM-as-a-judge score.
 
 ## Features
 
 - **Automated Model Discovery**: Discovers all vision-capable models available in your local Ollama installation
+- **Cloud Providers**: Select free vision models from OpenRouter, Token Harbor, or the NVIDIA API Catalog in the GUI
 - **Comprehensive Evaluation**: Tests multiple metrics including Levenshtein distance, Word Error Rate (WER), character accuracy, and semantic similarity
 - **LLM-as-a-Judge**: Uses an LLM to evaluate semantic similarity between extracted text and ground truth
 - **PDF Processing**: Converts multi-page PDFs to images for vision model processing
@@ -14,8 +15,8 @@ This system provides automated evaluation of multiple vision-capable LLMs runnin
 ## System Requirements
 
 - Python 3.8+
-- Ollama server running locally
-- At least one vision-capable model installed in Ollama
+- Access to the selected model provider (a local Ollama server only when using Ollama)
+- An API key for NVIDIA, OpenRouter, or Token Harbor when using those providers
 - Windows, macOS, or Linux
 
 ## Installation
@@ -85,8 +86,9 @@ python evaluate_handwriting_vision_models.py <pdf_path> <ground_truth_path> [opt
 **Options:**
 - `--output-dir DIR`: Output directory for results (default: evaluation_results)
 - `--ollama-url URL`: Ollama server URL (default: http://localhost:11434)
-- `--judge-model MODEL`: Model for LLM-as-a-judge (default: llama3.1:latest)
+- `--judge-model MODEL`: Model for LLM-as-a-judge
 - `--models MODEL1 MODEL2 ...`: Specific models to test
+- `--provider PROVIDER`: `ollama`, `openrouter`, `tokenharbor`, or `nvidia`
 
 **Example:**
 ```bash
@@ -95,6 +97,22 @@ python evaluate_handwriting_vision_models.py \
     test_docs/sample_ground_truth.txt \
     --output-dir custom_results \
     --models llava:latest qwen2-vl:latest
+```
+
+### NVIDIA API Catalog
+
+Install dependencies with `pip install -r requirements.txt`, choose **NVIDIA** in the GUI, enter your NVIDIA API key, then click **Refresh from build.nvidia.com**. The model list includes vision-capable chat models available through LangChain's `ChatNVIDIA` integration. The text-only `z-ai/glm5` model can be used as the judge, but is not listed as a transcription model.
+
+The key can also be supplied through the `NVIDIA_API_KEY` environment variable or the `--nvidia-api-key` command-line option. To list available vision models from the CLI, use `--list-nvidia-free`.
+
+The NVIDIA model list identifies models supported by the integration; it cannot confirm that your account has activated each model. For a 403 authorization error, open that model's page while signed into the NVIDIA account for your API key and accept any third-party model terms (shown as **Acknowledge & Continue**). Then retry. If access is still denied, verify that the key is active and belongs to that account. Client initialization is lazy and does not validate access; the first extraction request is where NVIDIA checks it.
+
+```bash
+python evaluate_handwriting_vision_models.py \
+    test_docs/document_0001.pdf \
+    test_docs/sample_ground_truth.txt \
+    --provider nvidia \
+    --cloud
 ```
 
 ### Batch Evaluation

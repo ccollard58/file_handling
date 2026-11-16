@@ -11,6 +11,7 @@ Author: GitHub Copilot
 Date: July 17, 2025
 """
 
+import io
 import os
 import json
 import requests
@@ -28,6 +29,15 @@ import statistics
 # LangChain imports
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from llm_retry import call_with_retry
+from gemini_rate_limits import (
+    GeminiRateLimiter,
+    count_input_tokens,
+    image_contents,
+    load_rate_limits,
+)
 import base64
 import csv
 
@@ -71,6 +81,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DEFAULT_NUM_CTX = 8192
+DEFAULT_PDF_DPI = 200
+
 # Context window sizes for models that may not be locally installed in Ollama
 # (e.g. cloud-hosted models where /api/show returns 404).
 # Keys are lowercase substrings matched against the full model name.
@@ -78,7 +91,7 @@ KNOWN_MODEL_CTX_LIMITS: Dict[str, int] = {
     "qwen2.5vl:32b-fp16": 32768,
     "qwen3-vl": 262144,
     "qwen3.5": 262144,
-    "gemma4": 262144,
+    "gemma4": 131072,
 }
 
 
@@ -94,6 +107,7 @@ class EvaluationResult:
     execution_time: float
     error_message: Optional[str] = None
     temperature: Optional[float] = None
+    judge_error: Optional[str] = None
 
 
 @dataclass
@@ -118,14 +132,18 @@ class VisionModelEvaluator:
         self,
         ollama_base_url: str = "http://localhost:11434",
         judge_model: str = "gpt-oss:120b",
-        request_timeout: int = 120,
-        default_num_ctx: int = 131072,
+        request_timeout: int = 300,
+        default_num_ctx: int = DEFAULT_NUM_CTX,
         provider: str = "ollama",
         openrouter_api_key: Optional[str] = None,
         openrouter_base_url: str = "https://openrouter.ai/api/v1",
         tokenharbor_api_key: Optional[str] = None,
         ollama_api_key: Optional[str] = None,
         nvidia_api_key: Optional[str] = None,
+        semantic_timeout: Optional[int] = None,
+        gemini_api_key: Optional[str] = None,
+        gemini_rate_limits=None,
+        pdf_dpi: int = DEFAULT_PDF_DPI,
     ):
         """
         Initialize the evaluator.
@@ -133,11 +151,17 @@ class VisionModelEvaluator:
         Args:
             ollama_base_url: URL of the Ollama server
             judge_model: Model to use for LLM-as-a-judge evaluations
-            provider: "ollama", "openrouter", "tokenharbor" or "nvidia"
+            default_num_ctx: Maximum context window requested from local Ollama models
+            pdf_dpi: Resolution used to rasterize PDF pages before vision inference
+            provider: "ollama", "openrouter", "tokenharbor", "nvidia" or "gemini"
         """
         self.provider = provider
         self.ollama_api_key = ollama_api_key or os.environ.get("OLLAMA_API_KEY")
         self.tokenharbor_api_key = tokenharbor_api_key
+        self.gemini_api_key = gemini_api_key
+        self.gemini_rate_limits = load_rate_limits(gemini_rate_limits)
+        self._gemini_rate_limiter = None
+        self._gemini_token_client = None
         self.nvidia_api_key = nvidia_api_key or os.environ.get("NVIDIA_API_KEY")
         self.openrouter_api_key = openrouter_api_key
         self.openrouter_base_url = openrouter_base_url
@@ -145,12 +169,31 @@ class VisionModelEvaluator:
         self.judge_model = judge_model
         self.judge_llm = None
         self.request_timeout = request_timeout
+        # Semantic judging only returns a short score. Cap its default wait
+        # separately so an unresponsive judge does not hold up a whole run.
+        self.semantic_timeout = max(
+            10,
+            semantic_timeout if semantic_timeout is not None else min(request_timeout, 60),
+        )
         self.default_num_ctx = default_num_ctx
+        self.pdf_dpi = int(pdf_dpi)
+        if self.default_num_ctx < 1:
+            raise ValueError("default_num_ctx must be a positive integer")
+        if not 36 <= self.pdf_dpi <= 600:
+            raise ValueError("pdf_dpi must be between 36 and 600")
         self._model_ctx_cache: Dict[str, int] = {}
         # Single log files per evaluator instance to keep outputs together
         _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._vision_log_path = f"vision_llm_outputs_{_ts}.log"
-        self._judge_log_path = f"judge_llm_outputs_{_ts}.log"
+        log_root = Path(__file__).resolve().parent
+        vision_log_dir = log_root / "vision_llm_outputs"
+        judge_log_dir = log_root / "judge_llm_outputs"
+        vision_log_dir.mkdir(parents=True, exist_ok=True)
+        judge_log_dir.mkdir(parents=True, exist_ok=True)
+        self._vision_log_path = str(vision_log_dir / f"vision_llm_outputs_{_ts}.log")
+        self._judge_log_path = str(judge_log_dir / f"judge_llm_outputs_{_ts}.log")
+        Path(self._vision_log_path).touch(exist_ok=True)
+        Path(self._judge_log_path).touch(exist_ok=True)
+        self._log_run_settings()
         self.poppler_path = self._find_poppler_path()
         
         # Initialize judge LLM
@@ -158,6 +201,74 @@ class VisionModelEvaluator:
         
         # Ensure required libraries are available
         self._check_dependencies()
+
+    def _get_gemini_rate_limiter(self):
+        if self._gemini_rate_limiter is None:
+            from gemini_models import get_api_key
+
+            api_key = get_api_key(self.gemini_api_key)
+            if not api_key:
+                raise RuntimeError("Gemini API key missing for quota enforcement.")
+            self.gemini_api_key = api_key
+            self._gemini_rate_limiter = GeminiRateLimiter(
+                api_key=api_key,
+                limits=self.gemini_rate_limits or load_rate_limits(),
+            )
+        return self._gemini_rate_limiter
+
+    def _get_gemini_token_client(self):
+        if self._gemini_token_client is None:
+            from google import genai
+            from google.genai import types
+
+            from gemini_models import get_api_key
+
+            api_key = get_api_key(self.gemini_api_key)
+            if not api_key:
+                raise RuntimeError("Gemini API key missing for token counting.")
+            self._gemini_token_client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(
+                    retry_options=types.HttpRetryOptions(attempts=1)
+                ),
+            )
+        return self._gemini_token_client
+
+    def _invoke_gemini_with_limits(self, model_name, contents, invoke):
+        """Reserve model RPM/TPM/RPD before an evaluator generation request."""
+        token_client = self._get_gemini_token_client()
+        input_tokens = count_input_tokens(token_client, model_name, contents)
+        limiter = self._get_gemini_rate_limiter()
+        with limiter.admit(model_name, input_tokens):
+            response = invoke()
+        return response
+
+    def _log_run_settings(self) -> None:
+        """Write the selected evaluation settings to the app and debug logs."""
+        logger.info(
+            "Run settings: provider=%s, judge_model=%s, num_ctx_cap=%s, "
+            "pdf_dpi=%s, request_timeout=%ss, semantic_timeout=%ss",
+            self.provider,
+            self.judge_model,
+            self.default_num_ctx,
+            self.pdf_dpi,
+            self.request_timeout,
+            self.semantic_timeout,
+        )
+        settings_text = (
+            "RUN SETTINGS\n"
+            f"  provider: {self.provider}\n"
+            f"  judge model: {self.judge_model}\n"
+            f"  Ollama context cap: {self.default_num_ctx} tokens\n"
+            f"  PDF render resolution: {self.pdf_dpi} DPI\n"
+            f"  request timeout: {self.request_timeout} seconds\n"
+            f"  semantic judge timeout: {self.semantic_timeout} seconds\n"
+            + "=" * 120
+            + "\n\n"
+        )
+        for log_path in (self._vision_log_path, self._judge_log_path):
+            with open(log_path, "a", encoding="utf-8") as log_file:
+                log_file.write(settings_text)
     
     def _find_poppler_path(self) -> Optional[str]:
         """Find Poppler path on Windows."""
@@ -195,8 +306,10 @@ class VisionModelEvaluator:
     def _initialize_judge_llm(self):
         """Initialize the LLM-as-a-judge model."""
         try:
-            if self.provider in ("openrouter", "tokenharbor", "nvidia"):
-                self.judge_llm = self._create_remote_llm(self.judge_model, 0.1, 256)
+            if self.provider in ("openrouter", "tokenharbor", "nvidia", "gemini"):
+                self.judge_llm = self._create_remote_llm(
+                    self.judge_model, 0.1, 256, timeout=self.semantic_timeout
+                )
                 logger.info(f"{self.provider} judge LLM initialized with model: {self.judge_model}")
                 return
             judge_kwargs = {
@@ -206,15 +319,15 @@ class VisionModelEvaluator:
                 "num_ctx": self._resolve_num_ctx(self.judge_model),
                 "num_predict": 256,
                 "client_kwargs": {
-                    "timeout": self.request_timeout,
+                    "timeout": self.semantic_timeout,
                     "headers": self._ollama_headers(),
                 },
                 "sync_client_kwargs": {
-                    "timeout": self.request_timeout,
+                    "timeout": self.semantic_timeout,
                     "headers": self._ollama_headers(),
                 },
                 "async_client_kwargs": {
-                    "timeout": self.request_timeout,
+                    "timeout": self.semantic_timeout,
                     "headers": self._ollama_headers(),
                 },
             }
@@ -250,7 +363,7 @@ class VisionModelEvaluator:
         if model_name in self._model_ctx_cache:
             return self._model_ctx_cache[model_name]
 
-        fallback_ctx = max(262144, self.default_num_ctx)
+        fallback_ctx = self.default_num_ctx
         try:
             response = requests.post(
                 f"{self.ollama_base_url.rstrip('/')}/api/show",
@@ -286,7 +399,7 @@ class VisionModelEvaluator:
     def _resolve_num_ctx(self, model_name: str) -> int:
         """Resolve num_ctx to match the model's actual context limit."""
         model_limit = self._get_model_ctx_limit(model_name)
-        resolved = max(262144, model_limit)
+        resolved = min(model_limit, self.default_num_ctx)
         logger.info(
             "Resolved num_ctx=%s for model=%s (model_limit=%s, default=%s)",
             resolved,
@@ -379,6 +492,9 @@ class VisionModelEvaluator:
             if self.provider == "nvidia":
                 from nvidia_models import fetch_vision_models
                 return [m.model_id for m in fetch_vision_models(api_key=self.nvidia_api_key)]
+            if self.provider == "gemini":
+                from gemini_models import fetch_vision_models
+                return [m.model_id for m in fetch_vision_models(api_key=self.gemini_api_key)]
             response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=10)
             response.raise_for_status()
             models = response.json().get("models", [])
@@ -433,9 +549,11 @@ class VisionModelEvaluator:
             if PDF2IMAGE_AVAILABLE:
                 # Use pdf2image (preferred method)
                 if self.poppler_path:
-                    images = convert_from_path(pdf_path, poppler_path=self.poppler_path, dpi=300)
+                    images = convert_from_path(
+                        pdf_path, poppler_path=self.poppler_path, dpi=self.pdf_dpi
+                    )
                 else:
-                    images = convert_from_path(pdf_path, dpi=300)
+                    images = convert_from_path(pdf_path, dpi=self.pdf_dpi)
                 
                 for i, image in enumerate(images):
                     temp_file = tempfile.NamedTemporaryFile(suffix=f'_page_{i+1}.png', delete=False)
@@ -448,14 +566,19 @@ class VisionModelEvaluator:
                 doc = fitz.open(pdf_path)
                 for page_num in range(len(doc)):
                     page = doc.load_page(page_num)
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better quality
+                    scale = self.pdf_dpi / 72
+                    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
                     temp_file = tempfile.NamedTemporaryFile(suffix=f'_page_{page_num+1}.png', delete=False)
                     pix.save(temp_file.name)
                     image_paths.append(temp_file.name)
                     temp_file.close()
                 doc.close()
             
-            logger.info(f"Converted PDF to {len(image_paths)} images")
+            logger.info(
+                "Converted PDF to %d images at %d DPI",
+                len(image_paths),
+                self.pdf_dpi,
+            )
             return image_paths
             
         except Exception as e:
@@ -466,6 +589,23 @@ class VisionModelEvaluator:
         """Convert an image file to base64 encoded string."""
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode("utf-8")
+
+    def _image_to_limited_jpeg_base64(self, image_path: str, max_b64_chars: int = 180_000) -> str:
+        """Downscale/recompress an image until its base64 form fits the limit."""
+        with Image.open(image_path) as img:
+            img = img.convert("RGB")
+            scale = 1.0
+            for _ in range(12):
+                size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+                resized = img.resize(size, Image.LANCZOS) if scale < 1.0 else img
+                for quality in (85, 70, 55, 40):
+                    buffer = io.BytesIO()
+                    resized.save(buffer, format="JPEG", quality=quality)
+                    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                    if len(encoded) <= max_b64_chars:
+                        return encoded
+                scale *= 0.75
+        raise ValueError(f"Could not shrink {image_path} below {max_b64_chars} base64 chars")
 
     def _describe_provider_error(self, model_name: str, error: Exception) -> str:
         """Add provider-specific recovery guidance to access errors."""
@@ -487,6 +627,12 @@ class VisionModelEvaluator:
                 f"already accepted, confirm the NVIDIA API key is active and belongs to that "
                 f"account. Model page: {model_page}. Original error: {message}"
             )
+        if status_code == 429 or re.search(r"\b429\b|RESOURCE_EXHAUSTED", message):
+            return (
+                f"Quota/rate limit exceeded for {model_name} (429). The model may not be "
+                f"available on your plan's free tier (limit: 0) or the daily quota is used up; "
+                f"enable billing, wait for the quota reset, or choose another model."
+            )
         return message
     
     def _is_qwen_model(self, model_name: str) -> bool:
@@ -494,37 +640,63 @@ class VisionModelEvaluator:
         model_lower = model_name.lower()
         return 'qwen' in model_lower or 'qwq' in model_lower
     
-    def _create_remote_llm(self, model_name: str, temperature: float, max_tokens: int):
+    def _create_remote_llm(
+        self,
+        model_name: str,
+        temperature: float,
+        max_tokens: int,
+        timeout: Optional[int] = None,
+    ):
         """Create a chat client for one of the remote model providers."""
+        timeout = timeout if timeout is not None else self.request_timeout
         if self.provider == "nvidia":
             from nvidia_models import create_chat_model
             return create_chat_model(
                 model_name, temperature=temperature, max_tokens=max_tokens,
-                timeout=self.request_timeout, api_key=self.nvidia_api_key,
+                timeout=timeout, api_key=self.nvidia_api_key,
             )
         if self.provider == "tokenharbor":
             from tokenharbor_models import create_chat_model
             return create_chat_model(
                 model_name, temperature=temperature, max_tokens=max_tokens,
-                timeout=self.request_timeout, api_key=self.tokenharbor_api_key,
+                timeout=timeout, api_key=self.tokenharbor_api_key,
+            )
+        if self.provider == "gemini":
+            from gemini_models import create_chat_model
+            return create_chat_model(
+                model_name, temperature=temperature, max_tokens=max_tokens,
+                timeout=timeout, api_key=self.gemini_api_key,
             )
         from openrouter_models import create_chat_model
         return create_chat_model(
             model_name, temperature=temperature, max_tokens=max_tokens,
-            timeout=self.request_timeout, base_url=self.openrouter_base_url,
+            timeout=timeout, base_url=self.openrouter_base_url,
             api_key=self.openrouter_api_key,
         )
 
     def _create_vision_llm(self, model_name: str, temperature: float = 0.0):
         """Create a chat client (Ollama, OpenRouter or Token Harbor) with model-specific hyperparameters."""
-        if self.provider in ("openrouter", "tokenharbor", "nvidia"):
+        if self.provider in ("openrouter", "tokenharbor", "nvidia", "gemini"):
             max_tokens = 16384 if self.provider == "nvidia" else 1024
             return self._create_remote_llm(model_name, temperature, max_tokens)
+        resolved_num_ctx = self._resolve_num_ctx(model_name)
+        logger.info(
+            "Vision extraction settings: model=%s, num_ctx=%s, pdf_dpi=%s, num_predict=%s",
+            model_name,
+            resolved_num_ctx,
+            self.pdf_dpi,
+            1024,
+        )
+        with open(self._vision_log_path, "a", encoding="utf-8") as log_file:
+            log_file.write(
+                f"MODEL SETTINGS: model={model_name}; num_ctx={resolved_num_ctx}; "
+                f"pdf_dpi={self.pdf_dpi}; num_predict=1024\n"
+            )
         common_kwargs = {
             "model": model_name,
             "temperature": temperature,
             "base_url": self.ollama_base_url,
-            "num_ctx": self._resolve_num_ctx(model_name),
+            "num_ctx": resolved_num_ctx,
             "num_predict": 1024,
             "client_kwargs": {
                 "timeout": self.request_timeout,
@@ -596,7 +768,12 @@ Be thorough and systematic in your transcription."""
 
                 try:
                     # Convert image to base64 and create multimodal message
-                    image_b64 = self._image_to_base64(image_path)
+                    if self.provider == "nvidia" and model_name == "google/paligemma":
+                        # Endpoint caps image_url at 204,800 characters.
+                        image_b64 = self._image_to_limited_jpeg_base64(image_path)
+                        image_path = "image.jpg"
+                    else:
+                        image_b64 = self._image_to_base64(image_path)
                     
                     # Determine image format from file extension
                     ext = Path(image_path).suffix.lower()
@@ -622,11 +799,47 @@ Be thorough and systematic in your transcription."""
                         ]
                     )
                     
-                    # Invoke the vision model with the multimodal message
+                    # NVIDIA's hosted reasoning models can exceed the
+                    # non-streaming gateway wait even with a small output
+                    # limit. Consume their streaming response as text.
                     response_start = datetime.now()
-                    response = vision_llm.invoke([message])
+                    if self.provider == "nvidia":
+                        from nvidia_models import should_stream_model
+
+                    if (
+                        self.provider == "nvidia"
+                        and should_stream_model(model_name)
+                    ):
+                        response_text = call_with_retry(
+                            lambda: "".join(
+                                chunk.content
+                                if isinstance(chunk.content, str)
+                                else str(chunk.content)
+                                for chunk in vision_llm.stream([message])
+                            ),
+                            description=f"Vision model '{model_name}'",
+                        )
+                    else:
+                        def invoke_vision_request():
+                            if self.provider == "gemini":
+                                contents = image_contents(image_path, prompt_text)
+                                return self._invoke_gemini_with_limits(
+                                    model_name,
+                                    contents,
+                                    lambda: vision_llm.invoke([message]),
+                                )
+                            return vision_llm.invoke([message])
+
+                        response = call_with_retry(
+                            invoke_vision_request,
+                            description=f"Vision model '{model_name}'",
+                        )
+                        response_text = (
+                            response.content
+                            if hasattr(response, "content")
+                            else str(response)
+                        )
                     response_time_seconds = (datetime.now() - response_start).total_seconds()
-                    response_text = response.content if hasattr(response, 'content') else str(response)
 
                     # --- Debugging: console preview of raw response ---
                     stripped = response_text.strip() if response_text else ""
@@ -663,6 +876,13 @@ Be thorough and systematic in your transcription."""
                 except Exception as e:
                     logger.error(f"Error processing page {i+1} with model {model_name}: {e}")
                     error_message = self._describe_provider_error(model_name, e)
+                    self._log_vision_llm_output(
+                        model_name,
+                        i + 1,
+                        locals().get("prompt_text", ""),
+                        f"[REQUEST FAILED] {error_message}",
+                        temperature,
+                    )
                     if page_errors is not None:
                         page_errors.append(f"Page {i+1}: {error_message}")
                     extracted_text += f"=== Page {i+1} ===\n[Error processing page: {error_message}]\n\n"
@@ -726,10 +946,13 @@ Be thorough and systematic in your transcription."""
     
     def calculate_semantic_similarity(self, reference: str, hypothesis: str) -> float:
         """Calculate semantic similarity using LLM-as-a-judge."""
+        self._last_judge_error = None
         if not self.judge_llm:
             logger.warning("Judge LLM not available, using character accuracy as semantic similarity")
+            self._last_judge_error = "Judge LLM not available"
             return self.calculate_character_accuracy(reference, hypothesis)
         
+        prompt = ""
         try:
             prompt = f"""You are an expert evaluator assessing the semantic similarity between two text passages. The first passage is the ground truth reference, and the second is a machine-generated transcription.
 
@@ -756,7 +979,20 @@ Generated Text:
 Respond with only a single number between 0.0 and 1.0 representing the semantic similarity score."""
 
             judge_start = datetime.now()
-            response = self.judge_llm.invoke(prompt)
+
+            def invoke_judge_request():
+                if self.provider == "gemini":
+                    return self._invoke_gemini_with_limits(
+                        self.judge_model,
+                        prompt,
+                        lambda: self.judge_llm.invoke(prompt),
+                    )
+                return self.judge_llm.invoke(prompt)
+
+            response = call_with_retry(
+                invoke_judge_request,
+                description=f"Judge model '{self.judge_model}'",
+            )
             judge_response_time_seconds = (datetime.now() - judge_start).total_seconds()
             response_text = response.content if hasattr(response, 'content') else str(response)
 
@@ -796,6 +1032,9 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
                 return final_score
             else:
                 logger.warning("Could not extract numeric score from judge response, falling back to character accuracy")
+                self._last_judge_error = (
+                    f"Judge {self.judge_model} returned no numeric score: {response_text[:200]!r}"
+                )
                 fallback_score = self.calculate_character_accuracy(reference, hypothesis)
                 
                 # Log the failed judge LLM output
@@ -811,8 +1050,23 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
                 return fallback_score
                 
         except Exception as e:
-            logger.error(f"Error in semantic similarity calculation: {e}")
-            return self.calculate_character_accuracy(reference, hypothesis)
+            logger.warning(
+                "Semantic judge %s request failed (timeout=%ss): %s; "
+                "using character accuracy as the semantic score",
+                self.judge_model,
+                self.semantic_timeout,
+                e,
+            )
+            fallback_score = self.calculate_character_accuracy(reference, hypothesis)
+            self._last_judge_error = f"Judge {self.judge_model} failed: {e}"
+            self._log_judge_llm_output(
+                reference,
+                hypothesis,
+                prompt,
+                f"[JUDGE REQUEST FAILED] {e}",
+                fallback_score,
+            )
+            return fallback_score
     
     def evaluate_model(self, model_name: str, image_paths: List[str], ground_truth: str, temperature: float = 0.0, judge_llm=None) -> EvaluationResult:
         """
@@ -835,16 +1089,17 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
             extracted_text, execution_time = self.extract_text_with_vision_model(
                 model_name, image_paths, temperature, page_errors
             )
-            if extracted_text.startswith("[Error:"):
+            all_pages_failed = bool(page_errors) and len(page_errors) >= len(image_paths)
+            if extracted_text.startswith("[Error:") or all_pages_failed:
                 return EvaluationResult(
                     model_name=model_name,
-                    extracted_text=extracted_text,
+                    extracted_text="" if all_pages_failed else extracted_text,
                     levenshtein_distance=1.0,
                     word_error_rate=1.0,
                     character_accuracy=0.0,
                     semantic_similarity=0.0,
                     execution_time=execution_time,
-                    error_message=extracted_text,
+                    error_message="\n".join(page_errors) if all_pages_failed else extracted_text,
                     temperature=temperature
                 )
             # Clean extracted text for comparison
@@ -1065,6 +1320,7 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
                     clean_extracted = self._clean_text_for_comparison(result.extracted_text)
                     clean_ground_truth = self._clean_text_for_comparison(ground_truth)
                     result.semantic_similarity = self.calculate_semantic_similarity(clean_ground_truth, clean_extracted)
+                    result.judge_error = self._last_judge_error
 
             step = total_steps
             report("Evaluation complete")
@@ -1130,7 +1386,8 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
                 "semantic_similarity": result.semantic_similarity,
                 "execution_time": result.execution_time,
                 "composite_score": self.calculate_composite_score(result),
-                "error_message": result.error_message
+                "error_message": result.error_message,
+                "judge_error": result.judge_error
             })
         
         with open(json_path, 'w', encoding='utf-8') as f:
@@ -1150,6 +1407,7 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
         """Generate a CSV summary of evaluation results."""
         fieldnames = [
             'model_name',
+            'model_output',
             'composite_score',
             'character_accuracy',
             'semantic_similarity',
@@ -1166,13 +1424,14 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
             for result in summary.results:
                 writer.writerow({
                     'model_name': result.model_name,
+                    'model_output': result.extracted_text,
                     'composite_score': f"{self.calculate_composite_score(result):.4f}",
                     'character_accuracy': f"{result.character_accuracy:.4f}",
                     'semantic_similarity': f"{result.semantic_similarity:.4f}" if result.semantic_similarity is not None else "N/A",
                     'word_error_rate': f"{result.word_error_rate:.4f}",
                     'levenshtein_distance': f"{result.levenshtein_distance:.4f}",
                     'execution_time': f"{result.execution_time:.2f}",
-                    'error': result.error_message or ""
+                    'error': "; ".join(filter(None, [result.error_message, result.judge_error]))
                 })
     
     def _generate_report(self, summary: EvaluationSummary, report_path: str):
@@ -1208,6 +1467,8 @@ Respond with only a single number between 0.0 and 1.0 representing the semantic 
                 
                 if result.error_message:
                     f.write(f"  ERROR: {result.error_message}\n")
+                if result.judge_error:
+                    f.write(f"  JUDGE ERROR: {result.judge_error}\n")
 
                 f.write("\n  Complete Transcription:\n")
                 f.write("  " + "-" * 60 + "\n")
@@ -1229,8 +1490,18 @@ def main():
     parser.add_argument("--gui", action="store_true", help="Launch the model selection GUI")
     parser.add_argument("--output-dir", default="evaluation_results", help="Output directory for results")
     parser.add_argument("--ollama-url", default="http://localhost:11434", help="Ollama server URL")
-    parser.add_argument("--judge-model", default=None, help="Model to use for LLM-as-a-judge (default: gpt-oss:120b; openai/gpt-oss-120b:free with --provider openrouter; mimo-v2.6-flash:free with --provider tokenharbor; z-ai/glm5 with --provider nvidia)")
-    parser.add_argument("--provider", choices=["ollama", "openrouter", "tokenharbor", "nvidia"], default="ollama", help="Model provider")
+    parser.add_argument("--judge-model", default=None, help="Model to use for LLM-as-a-judge (default: gpt-oss:120b; openai/gpt-oss-120b:free with --provider openrouter; mimo-v2.6-flash:free with --provider     tokenharbor; z-ai/glm5 with --provider nvidia; gemini-2.5-flash with --provider gemini)")
+    parser.add_argument("--provider", choices=["ollama", "openrouter", "tokenharbor", "nvidia", "gemini"], default="ollama", help="Model provider")
+    parser.add_argument("--gemini-api-key", default=None, help="Gemini API key (default: GEMINI_API_KEY or GOOGLE_API_KEY env var)")
+    parser.add_argument(
+        "--gemini-rate-limits",
+        default=os.environ.get("GEMINI_RATE_LIMITS_JSON"),
+        help=(
+            "JSON object keyed by every selected vision model and the Gemini judge model, "
+            "with AI Studio rpm, tpm, and rpd values; defaults to GEMINI_RATE_LIMITS_JSON"
+        ),
+    )
+    parser.add_argument("--list-gemini-models", action="store_true", help="List Gemini API vision models and exit")
     parser.add_argument("--ollama-api-key", default=None, help="Ollama Cloud API key (default: OLLAMA_API_KEY env var)")
     parser.add_argument("--openrouter-api-key", default=None, help="OpenRouter API key (default: OPENROUTER_API_KEY env var)")
     parser.add_argument("--tokenharbor-api-key", default=None, help="Token Harbor API key (default: TOKENHARBOR_API_KEY env var)")
@@ -1239,8 +1510,25 @@ def main():
     parser.add_argument("--list-tokenharbor-free", action="store_true", help="List free Token Harbor vision models and exit")
     parser.add_argument("--list-nvidia-free", action="store_true", help="List NVIDIA API Catalog vision models and exit")
     parser.add_argument("--models", nargs="+", help="Specific models to test (if not provided, all vision models will be tested)")
-    parser.add_argument("--request-timeout", type=int, default=120, help="Per-request timeout in seconds")
-    parser.add_argument("--num-ctx", type=int, default=131072, help="Default context window cap for model requests")
+    parser.add_argument("--request-timeout", type=int, default=300, help="Per-request timeout in seconds")
+    parser.add_argument(
+        "--semantic-timeout",
+        type=int,
+        default=None,
+        help="Judge request timeout in seconds (default: min(--request-timeout, 60))",
+    )
+    parser.add_argument(
+        "--num-ctx",
+        type=int,
+        default=DEFAULT_NUM_CTX,
+        help="Context window cap for model requests (default: 8192)",
+    )
+    parser.add_argument(
+        "--pdf-dpi",
+        type=int,
+        default=DEFAULT_PDF_DPI,
+        help="Resolution used to render PDF pages (default: 200 DPI; range: 36-600)",
+    )
     
     args = parser.parse_args()
 
@@ -1259,8 +1547,14 @@ def main():
         print("\n".join(m.model_id for m in fetch_vision_models(api_key=args.nvidia_api_key)))
         return 0
 
+    if args.list_gemini_models:
+        from gemini_models import fetch_vision_models
+        print("\n".join(m.model_id for m in fetch_vision_models(api_key=args.gemini_api_key)))
+        return 0
+
     if args.judge_model is None:
         args.judge_model = {
+            "gemini": "gemini-2.5-flash",
             "openrouter": "openai/gpt-oss-120b:free",
             "tokenharbor": "mimo-v2.6-flash:free",
             "nvidia": "z-ai/glm5",
@@ -1288,12 +1582,16 @@ def main():
             ollama_base_url=args.ollama_url,
             judge_model=args.judge_model,
             request_timeout=max(10, args.request_timeout),
-            default_num_ctx=max(262144, args.num_ctx),
+            semantic_timeout=args.semantic_timeout,
+            default_num_ctx=args.num_ctx,
+            pdf_dpi=args.pdf_dpi,
             provider=args.provider,
             ollama_api_key=args.ollama_api_key,
             openrouter_api_key=args.openrouter_api_key,
             tokenharbor_api_key=args.tokenharbor_api_key,
             nvidia_api_key=args.nvidia_api_key,
+            gemini_api_key=args.gemini_api_key,
+            gemini_rate_limits=args.gemini_rate_limits,
         )
         
         # Override model discovery if specific models requested
@@ -1307,6 +1605,9 @@ def main():
             elif args.provider == "nvidia":
                 from nvidia_models import fetch_vision_models
                 args.models = [m.model_id for m in fetch_vision_models(api_key=args.nvidia_api_key)]
+            elif args.provider == "gemini":
+                from gemini_models import fetch_vision_models
+                args.models = [m.model_id for m in fetch_vision_models(api_key=args.gemini_api_key)]
             else:
                 from ollama_cloud_models import fetch_free_cloud_vision_models
                 args.models = fetch_free_cloud_vision_models(

@@ -1,18 +1,24 @@
-"""PyQt6 GUI for selecting cloud vision models, running the evaluation,
+"""PyQt6 GUI for selecting Ollama and hosted vision models, running the evaluation,
 and viewing progress and results."""
 
+import os
 import sys
 from typing import Callable, List
 
-from PyQt6.QtCore import QObject, QSettings, Qt, QThread, pyqtSignal
+import requests
+from PyQt6.QtCore import QObject, QSettings, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QTabWidget, QTableWidget,
+    QSpinBox, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ollama_cloud_models import fetch_free_cloud_vision_models
+from ollama_cloud_models import (
+    fetch_free_cloud_vision_models,
+    fetch_local_vision_models,
+)
 from openrouter_models import fetch_vision_models as fetch_openrouter_models
 from tokenharbor_models import fetch_vision_models as fetch_tokenharbor_models
 from nvidia_models import fetch_vision_models as fetch_nvidia_models
@@ -24,19 +30,23 @@ RESULT_COLUMNS = [
 
 PROVIDER_LABELS = {
     "ollama": "Ollama", "openrouter": "OpenRouter", "tokenharbor": "Token Harbor",
-    "nvidia": "NVIDIA",
+    "nvidia": "NVIDIA", "gemini": "Gemini",
 }
 PAID_CAPABLE = ("openrouter", "tokenharbor")
+DEFAULT_NUM_CTX = 8192
+DEFAULT_PDF_DPI = 200
 DEFAULT_JUDGES = {
     "ollama": "gpt-oss:120b",
     "openrouter": "openai/gpt-oss-120b:free",
     "tokenharbor": "mimo-v2.6-flash:free",
     "nvidia": "z-ai/glm5",
+    "gemini": "gemini-2.5-flash",
 }
 DEFAULTS = {
     "pdf": "", "truth": "", "output_dir": "evaluation_results",
     "ollama_url": "http://localhost:11434", "provider": "ollama",
-    "include_paid": True,
+    "include_paid": True, "request_timeout": 300,
+    "num_ctx": DEFAULT_NUM_CTX, "pdf_dpi": DEFAULT_PDF_DPI,
 }
 
 
@@ -58,6 +68,7 @@ class TaskWorker(QObject):
     """Runs a callable on a thread; the callable receives this worker for signals."""
 
     progress = pyqtSignal(int, int, str)
+    debug_logs_ready = pyqtSignal(str, str)
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)
 
@@ -91,16 +102,29 @@ def start_worker(owner: QObject, task: Callable[[TaskWorker], object]):
 
 
 def make_evaluation_task(pdf, truth, out_dir, url, judge, models: List[str],
-                         provider: str = "ollama", api_key: str = ""):
+                         provider: str = "ollama", api_key: str = "",
+                         request_timeout: int = 300,
+                         num_ctx: int = DEFAULT_NUM_CTX,
+                         pdf_dpi: int = DEFAULT_PDF_DPI,
+                         gemini_rate_limits=None):
     def task(worker: TaskWorker):
         from evaluate_handwriting_vision_models import VisionModelEvaluator
 
         evaluator = VisionModelEvaluator(
             ollama_base_url=url, judge_model=judge, provider=provider,
+            request_timeout=request_timeout,
+            default_num_ctx=num_ctx, pdf_dpi=pdf_dpi,
+            semantic_timeout=request_timeout,
             ollama_api_key=api_key or None if provider == "ollama" else None,
             openrouter_api_key=api_key or None if provider == "openrouter" else None,
             tokenharbor_api_key=api_key or None if provider == "tokenharbor" else None,
             nvidia_api_key=api_key or None if provider == "nvidia" else None,
+            gemini_api_key=api_key or None if provider == "gemini" else None,
+            gemini_rate_limits=gemini_rate_limits,
+        )
+        worker.debug_logs_ready.emit(
+            evaluator._vision_log_path,
+            evaluator._judge_log_path,
         )
         return evaluator.evaluate_all_models(
             pdf, truth, out_dir, models=models,
@@ -117,24 +141,70 @@ def make_fetch_task(
     include_paid: bool = False,
 ):
     if provider == "openrouter":
-        return lambda worker: fetch_openrouter_models(
+        fetch_vision = lambda: fetch_openrouter_models(
             api_key=api_key or None, include_paid=include_paid
         )
-    if provider == "tokenharbor":
-        return lambda worker: fetch_tokenharbor_models(
+        from openrouter_models import fetch_free_text_models
+        fetch_judges = lambda: fetch_free_text_models(api_key=api_key or None)
+    elif provider == "tokenharbor":
+        fetch_vision = lambda: fetch_tokenharbor_models(
             api_key=api_key or None, include_paid=include_paid
         )
-    if provider == "nvidia":
-        return lambda worker: fetch_nvidia_models(api_key=api_key or None)
-    return lambda worker: fetch_free_cloud_vision_models(
-        ollama_url, api_key=api_key or None
-    )
+        from tokenharbor_models import fetch_free_text_models
+        fetch_judges = lambda: fetch_free_text_models(api_key=api_key or None)
+    elif provider == "nvidia":
+        fetch_vision = lambda: fetch_nvidia_models(api_key=api_key or None)
+        from nvidia_models import fetch_text_models
+        fetch_judges = lambda: fetch_text_models(api_key=api_key or None)
+    elif provider == "gemini":
+        from gemini_models import fetch_text_models, fetch_vision_models
+        fetch_vision = lambda: fetch_vision_models(api_key=api_key or None)
+        fetch_judges = lambda: fetch_text_models(api_key=api_key or None)
+    else:
+        from ollama_cloud_models import fetch_text_models
+
+        def fetch_vision():
+            local_models = fetch_local_vision_models(
+                ollama_url, api_key=api_key or None
+            )
+            try:
+                cloud_models = fetch_free_cloud_vision_models(
+                    ollama_url, api_key=api_key or None
+                )
+            except requests.RequestException as exc:
+                return local_models, f"Could not refresh Ollama cloud models: {exc}"
+            return list(dict.fromkeys(cloud_models + local_models)), None
+
+        def fetch_judges():
+            text_models = fetch_text_models(
+                ollama_url, api_key=api_key or None
+            )
+            local_vision_models = fetch_local_vision_models(
+                ollama_url, api_key=api_key or None
+            )
+            return list(dict.fromkeys(text_models + local_vision_models))
+
+    def fetch(_worker):
+        vision_error = None
+        if provider == "ollama":
+            vision_models, vision_error = fetch_vision()
+        else:
+            vision_models = fetch_vision()
+        try:
+            judge_models = fetch_judges()
+            judge_error = None
+        except Exception as exc:
+            judge_models = []
+            judge_error = str(exc)
+        return vision_models, judge_models, judge_error, vision_error
+
+    return fetch
 
 
 class MainWindow(QMainWindow):
     def __init__(self, args=None):
         super().__init__()
-        self.setWindowTitle("Cloud Vision Model Evaluation")
+        self.setWindowTitle("Vision Model Evaluation")
         self.resize(1100, 800)
         self._thread = None
         self._worker = None
@@ -142,6 +212,7 @@ class MainWindow(QMainWindow):
         self._fetch_id = 0
 
         self._settings = new_settings()
+        self._gemini_rate_limits = getattr(args, "gemini_rate_limits", None)
 
         def setting(key, arg_name, default):
             return resolve_setting(self._settings, key, getattr(args, arg_name, None), default)
@@ -155,12 +226,43 @@ class MainWindow(QMainWindow):
         self.truth_edit = QLineEdit(setting("truth", "ground_truth_path", DEFAULTS["truth"]))
         self.out_edit = QLineEdit(setting("output_dir", "output_dir", DEFAULTS["output_dir"]))
         self.url_edit = QLineEdit(setting("ollama_url", "ollama_url", DEFAULTS["ollama_url"]))
-        self.judge_edit = QLineEdit(
-            resolve_setting(
-                self._settings, f"judge/{provider}", getattr(args, "judge_model", None),
-                DEFAULT_JUDGES[provider],
-            )
+        self.request_timeout_spin = QSpinBox()
+        self.request_timeout_spin.setRange(10, 3600)
+        self.request_timeout_spin.setSingleStep(30)
+        self.request_timeout_spin.setSuffix(" s")
+        self.request_timeout_spin.setToolTip(
+            "Maximum wait for each model extraction and judge request, in seconds."
         )
+        self.request_timeout_spin.setValue(
+            int(setting("request_timeout", "request_timeout", DEFAULTS["request_timeout"]))
+        )
+        self.num_ctx_spin = QSpinBox()
+        self.num_ctx_spin.setRange(1024, 262144)
+        self.num_ctx_spin.setSingleStep(1024)
+        self.num_ctx_spin.setSuffix(" tokens")
+        self.num_ctx_spin.setToolTip(
+            "Maximum context sent to local Ollama models. Lower values use less VRAM."
+        )
+        self.num_ctx_spin.setValue(
+            int(setting("num_ctx", "num_ctx", DEFAULTS["num_ctx"]))
+        )
+        self.pdf_dpi_spin = QSpinBox()
+        self.pdf_dpi_spin.setRange(72, 600)
+        self.pdf_dpi_spin.setSingleStep(25)
+        self.pdf_dpi_spin.setSuffix(" DPI")
+        self.pdf_dpi_spin.setToolTip(
+            "Resolution used to rasterize each PDF page before sending it to a vision model."
+        )
+        self.pdf_dpi_spin.setValue(
+            int(setting("pdf_dpi", "pdf_dpi", DEFAULTS["pdf_dpi"]))
+        )
+        initial_judge = resolve_setting(
+            self._settings, f"judge/{provider}", getattr(args, "judge_model", None),
+            DEFAULT_JUDGES[provider],
+        )
+        self.judge_combo = QComboBox()
+        self.judge_combo.setEditable(True)
+        self.judge_combo.addItem(initial_judge)
         self.provider_combo = QComboBox()
         self.provider_combo.addItems(list(PROVIDER_LABELS))
         self.provider_combo.setCurrentText(provider)
@@ -188,6 +290,24 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.status = QLabel("Idle")
         self.log = QPlainTextEdit(readOnly=True)
+        self.vision_debug_log = QPlainTextEdit(readOnly=True)
+        self.judge_debug_log = QPlainTextEdit(readOnly=True)
+        for log_widget in (self.log, self.vision_debug_log, self.judge_debug_log):
+            log_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            log_widget.customContextMenuRequested.connect(
+                lambda position, widget=log_widget: self._show_log_context_menu(
+                    widget, position
+                )
+            )
+        self._debug_log_paths = {"vision": None, "judge": None}
+        self._debug_log_state = {
+            "vision": {"path": None, "position": 0, "size": 0},
+            "judge": {"path": None, "position": 0, "size": 0},
+        }
+        self._debug_log_timer = QTimer(self)
+        self._debug_log_timer.setInterval(500)
+        self._debug_log_timer.timeout.connect(self._refresh_debug_logs)
+        self._debug_log_timer.start()
         self.table = QTableWidget(0, len(RESULT_COLUMNS))
         self.table.setHorizontalHeaderLabels(RESULT_COLUMNS)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -222,18 +342,20 @@ class MainWindow(QMainWindow):
         self.include_paid_checkbox.setText(f"Show paid {label} vision models")
         self.include_paid_checkbox.setVisible(provider in PAID_CAPABLE)
         source = {
-            "ollama": "ollama.com", "openrouter": "openrouter.ai",
+            "ollama": "Ollama", "openrouter": "openrouter.ai",
             "tokenharbor": "tokenharbor.ai", "nvidia": "build.nvidia.com",
-        }
+                        "gemini": "ai.google.dev",
+                    }
         self.refresh_btn.setText(f"Refresh from {source[provider]}")
 
     def _on_provider_changed(self, provider: str) -> None:
         # Each provider remembers its own judge model and API key.
-        self._settings.setValue(f"judge/{self._provider}", self.judge_edit.text().strip())
+        self._settings.setValue(f"judge/{self._provider}", self.judge_combo.currentText().strip())
         self._keys[self._provider] = self.key_edit.text().strip()
         self._provider = provider
         saved = self._settings.value(f"judge/{provider}", DEFAULT_JUDGES[provider])
-        self.judge_edit.setText(saved or DEFAULT_JUDGES[provider])
+        self.judge_combo.clear()
+        self.judge_combo.addItem(saved or DEFAULT_JUDGES[provider])
         self.key_edit.setText(self._keys.get(provider, ""))
         self._apply_provider_labels(provider)
         self.refresh_models()
@@ -248,13 +370,16 @@ class MainWindow(QMainWindow):
         s.setValue("truth", self.truth_edit.text().strip())
         s.setValue("output_dir", self.out_edit.text().strip())
         s.setValue("ollama_url", self.url_edit.text().strip())
+        s.setValue("request_timeout", self.request_timeout_spin.value())
+        s.setValue("num_ctx", self.num_ctx_spin.value())
+        s.setValue("pdf_dpi", self.pdf_dpi_spin.value())
         provider = self.provider_combo.currentText()
         s.setValue("provider", provider)
         self._keys[provider] = self.key_edit.text().strip()
         for name, key in self._keys.items():
             s.setValue(f"{name}_key", key)
         s.setValue("include_paid", self.include_paid_checkbox.isChecked())
-        s.setValue(f"judge/{provider}", self.judge_edit.text().strip())
+        s.setValue(f"judge/{provider}", self.judge_combo.currentText().strip())
         s.sync()
 
     def closeEvent(self, event) -> None:
@@ -271,7 +396,10 @@ class MainWindow(QMainWindow):
             ("Provider", self.provider_combo, None),
             (self.key_label, self.key_edit, None),
             ("Ollama URL", self.url_edit, None),
-            ("Judge model", self.judge_edit, None),
+            ("Judge model", self.judge_combo, None),
+            ("Request timeout", self.request_timeout_spin, None),
+            ("Ollama context cap", self.num_ctx_spin, None),
+            ("PDF render resolution", self.pdf_dpi_spin, None),
         ]):
             grid.addWidget(label if isinstance(label, QLabel) else QLabel(label), row, 0)
             grid.addWidget(edit, row, 1)
@@ -280,7 +408,7 @@ class MainWindow(QMainWindow):
                 button.clicked.connect(lambda _=False, e=edit, k=browse: self._browse(e, k))
                 grid.addWidget(button, row, 2)
 
-        models_box = QGroupBox("Free cloud vision models (check to evaluate)")
+        models_box = QGroupBox("Vision models (check to evaluate)")
         models_layout = QVBoxLayout(models_box)
         buttons = QHBoxLayout()
         for button in (self.refresh_btn, self.all_btn, self.none_btn):
@@ -302,7 +430,11 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.progress, 1)
         log_layout.addLayout(controls)
         log_layout.addWidget(self.status)
-        log_layout.addWidget(self.log)
+        log_tabs = QTabWidget()
+        log_tabs.addTab(self.log, "Progress")
+        log_tabs.addTab(self.vision_debug_log, "Vision LLM debug")
+        log_tabs.addTab(self.judge_debug_log, "Judge LLM debug")
+        log_layout.addWidget(log_tabs)
 
         top = QSplitter(Qt.Orientation.Horizontal)
         top.addWidget(models_box)
@@ -329,9 +461,58 @@ class MainWindow(QMainWindow):
     def _log(self, message: str) -> None:
         self.log.appendPlainText(message)
 
+    def _show_log_context_menu(self, widget: QPlainTextEdit, position) -> None:
+        menu = widget.createStandardContextMenu()
+        output = widget.toPlainText()
+        if output:
+            menu.addSeparator()
+            copy_all_action = menu.addAction("Copy all output")
+            copy_all_action.triggered.connect(
+                lambda _checked=False, text=output: (
+                    QApplication.clipboard().setText(text)
+                )
+            )
+        menu.exec(widget.mapToGlobal(position))
+
+    def _set_debug_log_paths(self, vision_path: str, judge_path: str) -> None:
+        self._debug_log_paths = {"vision": vision_path, "judge": judge_path}
+        for kind, widget in (("vision", self.vision_debug_log), ("judge", self.judge_debug_log)):
+            self._debug_log_state[kind] = {"path": None, "position": 0, "size": 0}
+            widget.clear()
+        self._refresh_debug_logs()
+
+    def _refresh_debug_logs(self) -> None:
+        for kind, widget in (("vision", self.vision_debug_log), ("judge", self.judge_debug_log)):
+            path = self._debug_log_paths[kind]
+            if not path:
+                continue
+            try:
+                size = os.path.getsize(path)
+                state = self._debug_log_state[kind]
+                if state["path"] != path or size < state["size"]:
+                    widget.clear()
+                    state.update(path=path, position=0, size=0)
+                if size == state["size"]:
+                    continue
+                with open(path, "r", encoding="utf-8", errors="replace") as log_file:
+                    log_file.seek(state["position"])
+                    added_text = log_file.read()
+                    state["position"] = log_file.tell()
+                state["size"] = size
+                if added_text:
+                    cursor = widget.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    cursor.insertText(added_text)
+                    widget.setTextCursor(cursor)
+                    widget.ensureCursorVisible()
+            except FileNotFoundError:
+                continue
+
     def _set_busy(self, busy: bool) -> None:
         self.run_btn.setEnabled(not busy)
         self.refresh_btn.setEnabled(not busy)
+        self.num_ctx_spin.setEnabled(not busy)
+        self.pdf_dpi_spin.setEnabled(not busy)
         self.cancel_btn.setEnabled(busy)
 
     def _set_all_checked(self, checked: bool) -> None:
@@ -355,6 +536,7 @@ class MainWindow(QMainWindow):
         thread.finished.connect(lambda t=thread: self._running.discard(t))
         worker.finished.connect(on_done)
         worker.failed.connect(on_fail)
+        worker.debug_logs_ready.connect(self._set_debug_log_paths)
         if on_progress:
             worker.progress.connect(on_progress)
         thread.start()
@@ -369,9 +551,14 @@ class MainWindow(QMainWindow):
         include_paid = (
             provider in PAID_CAPABLE and self.include_paid_checkbox.isChecked()
         )
-        listing = (
-            "vision models" if include_paid else f"free {provider} vision models"
-        )
+        if provider == "ollama":
+            listing = "Ollama vision and judge models"
+        else:
+            listing = (
+                "vision and text judge models"
+                if include_paid
+                else f"free {provider} vision and text judge models"
+            )
         self.status.setText(f"Fetching {listing}...")
         self._launch(
             make_fetch_task(
@@ -380,11 +567,17 @@ class MainWindow(QMainWindow):
                 self._api_key(),
                 include_paid=include_paid,
             ),
-            lambda models: fetch_id == self._fetch_id and self._on_models(models, provider),
+            lambda result: fetch_id == self._fetch_id and self._on_models(result, provider),
             lambda msg: fetch_id == self._fetch_id and self._on_models_failed(msg),
         )
 
-    def _on_models(self, models, provider: str) -> None:
+    def _on_models(self, result, provider: str) -> None:
+        models, judge_models, judge_error, vision_error = result
+        self._populate_judge_models(judge_models, provider)
+        if judge_error:
+            self._log(f"Could not refresh {provider} text judge models: {judge_error}")
+        if vision_error:
+            self._log(vision_error)
         self.model_list.clear()
         free_count = 0
         paid_count = 0
@@ -421,10 +614,26 @@ class MainWindow(QMainWindow):
                     f"Discovered {free_count} free and {paid_count} paid {label} vision models"
                 )
             else:
-                self.status.setText(f"Found {len(models)} free {provider} vision models")
-                self._log(f"Discovered {len(models)} free {provider} vision models")
+                qualifier = "" if provider == "ollama" else "free "
+                self.status.setText(
+                    f"Found {len(models)} {qualifier}{provider} vision models"
+                )
+                self._log(
+                    f"Discovered {len(models)} {qualifier}{provider} vision models"
+                )
             self.run_btn.setEnabled(True)
         self._set_busy(False)
+
+    def _populate_judge_models(self, models: List[str], provider: str) -> None:
+        selected = self.judge_combo.currentText().strip() or DEFAULT_JUDGES[provider]
+        self.judge_combo.clear()
+        for model in models:
+            self.judge_combo.addItem(model)
+        if selected not in models:
+            # Keep saved/custom model ids usable if a provider omits them from
+            # its current catalog response.
+            self.judge_combo.addItem(selected)
+        self.judge_combo.setCurrentText(selected)
 
     def _on_models_failed(self, message: str) -> None:
         self.status.setText("Could not fetch model list")
@@ -466,11 +675,22 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(0)
         self.progress.setValue(0)
         self._set_busy(True)
-        self._log(f"Starting evaluation of {len(models)} models")
+        provider = self.provider_combo.currentText()
+        self._log(
+            f"Starting evaluation of {len(models)} models; settings: "
+            f"provider={provider}, models={', '.join(models)}, "
+            f"Ollama context cap={self.num_ctx_spin.value()} tokens, "
+            f"PDF render resolution={self.pdf_dpi_spin.value()} DPI, "
+            f"request timeout={self.request_timeout_spin.value()} seconds"
+        )
+        self._set_debug_log_paths("", "")
         task = make_evaluation_task(
             pdf, truth, self.out_edit.text().strip() or "evaluation_results",
-            self.url_edit.text().strip(), self.judge_edit.text().strip(), models,
-            self.provider_combo.currentText(), self._api_key(),
+            self.url_edit.text().strip(), self.judge_combo.currentText().strip(), models,
+            provider, self._api_key(),
+            self.request_timeout_spin.value(),
+            self.num_ctx_spin.value(), self.pdf_dpi_spin.value(),
+            gemini_rate_limits=self._gemini_rate_limits,
         )
         self._launch(task, self._on_results, self._on_eval_failed, self._on_progress)
 
@@ -499,7 +719,7 @@ class MainWindow(QMainWindow):
                 str(row + 1), name, f"{score:.3f}", f"{r.character_accuracy:.3f}",
                 f"{r.semantic_similarity:.3f}", f"{r.word_error_rate:.3f}",
                 f"{r.levenshtein_distance:.3f}", f"{r.execution_time:.1f}",
-                r.error_message or "",
+                "; ".join(filter(None, [r.error_message, getattr(r, "judge_error", None)])),
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)

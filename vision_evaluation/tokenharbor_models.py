@@ -119,6 +119,37 @@ def fetch_vision_models(
     return models
 
 
+def fetch_free_text_models(
+    timeout: int = 20,
+    api_key: Optional[str] = None,
+    base_url: str = TOKENHARBOR_BASE_URL,
+) -> List[str]:
+    """List free models that accept and return text, suitable for judging."""
+    page = requests.get(TOKENHARBOR_MODELS_URL, headers=_HEADERS, timeout=timeout)
+    page.raise_for_status()
+    rows = parse_models_page(page.text)
+
+    model_ids = []
+    for row in rows:
+        model_id = row.get("surface")
+        modalities = row.get("inputModalities") or []
+        outputs = row.get("outputModalities")
+        if not isinstance(outputs, list):
+            outputs = ["text"]
+        if (
+            model_id
+            and "text" in modalities
+            and "text" in outputs
+            and bool(row.get("isFree"))
+        ):
+            model_ids.append(model_id)
+
+    if key := get_api_key(api_key):
+        callable_ids = set(fetch_callable_ids(key, base_url, timeout))
+        model_ids = [model_id for model_id in model_ids if model_id in callable_ids]
+    return sorted(set(model_ids))
+
+
 def create_chat_model(
     model: str,
     temperature: float = 0.0,

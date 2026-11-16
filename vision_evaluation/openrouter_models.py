@@ -100,6 +100,32 @@ def fetch_vision_models(
     return parse_vision_models(response.json(), include_paid=include_paid)
 
 
+def fetch_free_text_models(
+    base_url: str = OPENROUTER_BASE_URL,
+    timeout: int = 20,
+    api_key: Optional[str] = None,
+) -> List[str]:
+    """List free models that accept and return text, suitable for judging."""
+    headers = {"Authorization": f"Bearer {key}"} if (key := get_api_key(api_key)) else {}
+    response = requests.get(f"{base_url.rstrip('/')}/models", headers=headers, timeout=timeout)
+    response.raise_for_status()
+
+    model_ids = []
+    for model in response.json().get("data", []):
+        model_id = model.get("id")
+        arch = model.get("architecture") or {}
+        inputs = arch.get("input_modalities") or []
+        outputs = arch.get("output_modalities") or []
+        if (
+            model_id
+            and "text" in inputs
+            and outputs == ["text"]
+            and _is_free(model)
+        ):
+            model_ids.append(model_id)
+    return sorted(set(model_ids))
+
+
 def fetch_free_vision_models(
     base_url: str = OPENROUTER_BASE_URL, timeout: int = 20, api_key: Optional[str] = None
 ) -> List[str]:

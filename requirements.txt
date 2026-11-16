@@ -19,6 +19,7 @@ seaborn
 nbformat
 python-docx
 openpyxl
+playwright
 pywin32
 opencv-python
 requests

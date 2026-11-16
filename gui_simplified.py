@@ -11,7 +11,14 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import Qt, QFileInfo, QDir, QModelIndex, QThread, pyqtSignal, QSize, QTimer, QEvent, QRect, QObject, QDateTime, QSortFilterProxyModel, QUrl
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QFileSystemModel, QAction, QColor, QPixmap, QImage, QIcon, QPainter, QFont, QFontMetrics, QDesktopServices
 from PyQt6.QtPdf import QPdfDocument
-from PyQt6.QtWidgets import QScrollArea, QSlider
+from PyQt6.QtWidgets import QScrollArea, QSlider, QPlainTextEdit
+from gemini_rate_limits import (
+    DEFAULT_GEMINI_RATE_LIMITS,
+    DEFAULT_GEMINI_PROJECT_ID,
+    GeminiRateLimitConfigurationError,
+    load_rate_limits,
+    parse_rate_limits,
+)
 
 
 class ClickableLabel(QLabel):
@@ -721,7 +728,9 @@ class FileOrganizerGUI(QMainWindow):
                     "model": self.llm_analyzer.model,
                     "vision_model": self.llm_analyzer.vision_model,
                     "temperature": self.llm_analyzer.temperature,
-                    "google_api_key": self.llm_analyzer.google_api_key or ""
+                    "google_api_key": self.llm_analyzer.google_api_key or "",
+                    "nvidia_api_key": self.llm_analyzer.nvidia_api_key or "",
+                    "gemini_rate_limits": self.llm_analyzer.gemini_rate_limits,
                 }
             }
             with open(self.config_file, 'w') as f:
@@ -740,11 +749,14 @@ class FileOrganizerGUI(QMainWindow):
                 vision_model = llm_settings.get("vision_model", self.llm_analyzer.vision_model)
                 temperature = llm_settings.get("temperature", self.llm_analyzer.temperature)
                 google_api_key = llm_settings.get("google_api_key", "") or None
+                nvidia_api_key = llm_settings.get("nvidia_api_key", "") or None
                 
                 # Update LLM analyzer with saved settings
                 self.llm_analyzer.update_settings(
                     model, temperature, vision_model,
-                    provider=provider, google_api_key=google_api_key
+                    provider=provider, google_api_key=google_api_key,
+                    nvidia_api_key=nvidia_api_key,
+                    gemini_rate_limits=llm_settings.get("gemini_rate_limits", {}),
                 )
                 logging.info(f"Restored LLM settings - Provider: {provider}, Model: {model}, Vision: {vision_model}, Temp: {temperature}")
         except Exception as e:
@@ -819,6 +831,7 @@ class FileOrganizerGUI(QMainWindow):
         self.file_system_model = QFileSystemModel()
         self.file_tree.setModel(self.file_system_model)
         self.file_tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
+        self.file_tree.setSelectionBehavior(QTreeView.SelectionBehavior.SelectRows)
         # Enable opening files from the source pane
         self.file_tree.doubleClicked.connect(self.open_in_source_pane)
         self.file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1144,10 +1157,14 @@ class FileOrganizerGUI(QMainWindow):
         
         provider_layout.addWidget(QLabel("Provider:"))
         self.provider_combo = QComboBox()
-        self.provider_combo.addItems(["Ollama (Local)", "Google AI Studio"])
+        self.provider_combo.addItems(
+            ["Ollama (Local)", "Google AI Studio", "NVIDIA Cloud"]
+        )
         # Set initial value based on analyzer state
         if self.llm_analyzer.provider == "google":
             self.provider_combo.setCurrentText("Google AI Studio")
+        elif self.llm_analyzer.provider == "nvidia":
+            self.provider_combo.setCurrentText("NVIDIA Cloud")
         else:
             self.provider_combo.setCurrentText("Ollama (Local)")
         self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
@@ -1176,6 +1193,42 @@ class FileOrganizerGUI(QMainWindow):
         # Show/hide the group depending on initial provider
         self.google_api_group.setVisible(self.llm_analyzer.provider == "google")
         settings_layout.addWidget(self.google_api_group)
+
+        self.google_rate_limits_group = QGroupBox("Gemini Model Rate Limits")
+        google_rate_limits_layout = QVBoxLayout(self.google_rate_limits_group)
+        google_rate_limits_layout.addWidget(QLabel(
+            "These limits come from the AI Studio table you supplied for this project. "
+            "Edit them if Google changes a model's RPM, TPM, or RPD. Use null for a metric Google does not list."
+        ))
+        self.google_rate_limits_edit = QPlainTextEdit()
+        self.google_rate_limits_edit.setPlaceholderText(
+            '{\n  "model-id": {"rpm": RPM, "tpm": TPM, "rpd": RPD}\n}'
+        )
+        self.google_rate_limits_edit.setMaximumHeight(110)
+        google_rate_limits_layout.addWidget(self.google_rate_limits_edit)
+        self.google_rate_limits_group.setVisible(self.llm_analyzer.provider == "google")
+        settings_layout.addWidget(self.google_rate_limits_group)
+
+        # ── NVIDIA Cloud API Key Group ──
+        self.nvidia_api_group = QGroupBox("NVIDIA Cloud API Key")
+        nvidia_api_layout = QHBoxLayout(self.nvidia_api_group)
+
+        self.nvidia_api_key_edit = QLineEdit()
+        self.nvidia_api_key_edit.setPlaceholderText("Enter your NVIDIA API key")
+        self.nvidia_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        if self.llm_analyzer.nvidia_api_key:
+            self.nvidia_api_key_edit.setText(self.llm_analyzer.nvidia_api_key)
+        nvidia_api_layout.addWidget(self.nvidia_api_key_edit)
+
+        self.toggle_nvidia_api_key_btn = QPushButton("Show")
+        self.toggle_nvidia_api_key_btn.setFixedWidth(60)
+        self.toggle_nvidia_api_key_btn.clicked.connect(
+            self._toggle_nvidia_api_key_visibility
+        )
+        nvidia_api_layout.addWidget(self.toggle_nvidia_api_key_btn)
+
+        self.nvidia_api_group.setVisible(self.llm_analyzer.provider == "nvidia")
+        settings_layout.addWidget(self.nvidia_api_group)
         
         # ── LLM Configuration Group ──
         llm_group = QGroupBox("LLM Configuration")
@@ -1227,18 +1280,26 @@ class FileOrganizerGUI(QMainWindow):
         # Connect change signals to track when settings are modified
         self.provider_combo.currentTextChanged.connect(self.on_settings_changed)
         self.google_api_key_edit.textChanged.connect(self.on_settings_changed)
+        self.google_rate_limits_edit.textChanged.connect(self.on_settings_changed)
+        self.nvidia_api_key_edit.textChanged.connect(self.on_settings_changed)
         self.model_combo.currentTextChanged.connect(self.on_settings_changed)
         self.vision_model_combo.currentTextChanged.connect(self.on_settings_changed)
         self.temp_edit.textChanged.connect(self.on_settings_changed)
     
     def _get_selected_provider(self):
-        """Return the provider key ('ollama' or 'google') based on the combo selection."""
-        return "google" if self.provider_combo.currentText() == "Google AI Studio" else "ollama"
+        """Return the provider key corresponding to the combo selection."""
+        provider = self.provider_combo.currentText()
+        if provider == "Google AI Studio":
+            return "google"
+        if provider == "NVIDIA Cloud":
+            return "nvidia"
+        return "ollama"
     
     def _on_provider_changed(self, text):
         """Handle provider combo change — show/hide API key group and repopulate models."""
-        is_google = (text == "Google AI Studio")
-        self.google_api_group.setVisible(is_google)
+        self.google_api_group.setVisible(text == "Google AI Studio")
+        self.google_rate_limits_group.setVisible(text == "Google AI Studio")
+        self.nvidia_api_group.setVisible(text == "NVIDIA Cloud")
         self.populate_models()
         self.populate_vision_models()
     
@@ -1250,6 +1311,15 @@ class FileOrganizerGUI(QMainWindow):
         else:
             self.google_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
             self.toggle_api_key_btn.setText("Show")
+
+    def _toggle_nvidia_api_key_visibility(self):
+        """Toggle between showing and hiding the NVIDIA API key."""
+        if self.nvidia_api_key_edit.echoMode() == QLineEdit.EchoMode.Password:
+            self.nvidia_api_key_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.toggle_nvidia_api_key_btn.setText("Hide")
+        else:
+            self.nvidia_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.toggle_nvidia_api_key_btn.setText("Show")
     
     def create_logging_tab(self):
         """Create the real-time logging tab"""
@@ -1427,19 +1497,38 @@ class FileOrganizerGUI(QMainWindow):
 
     def populate_settings(self):
         """Populates the settings controls with current values."""
+        self.provider_combo.blockSignals(True)
+        if self.llm_analyzer.provider == "google":
+            self.provider_combo.setCurrentText("Google AI Studio")
+        elif self.llm_analyzer.provider == "nvidia":
+            self.provider_combo.setCurrentText("NVIDIA Cloud")
+        else:
+            self.provider_combo.setCurrentText("Ollama (Local)")
+        self.provider_combo.blockSignals(False)
+        self.google_api_group.setVisible(self.llm_analyzer.provider == "google")
+        self.google_rate_limits_group.setVisible(self.llm_analyzer.provider == "google")
+        self.nvidia_api_group.setVisible(self.llm_analyzer.provider == "nvidia")
+
+        if self.llm_analyzer.google_api_key:
+            self.google_api_key_edit.setText(self.llm_analyzer.google_api_key)
+        rate_limits_config = self.llm_analyzer.gemini_rate_limits
+        if not rate_limits_config:
+            rate_limits_config = os.environ.get("GEMINI_RATE_LIMITS_JSON")
+        if not rate_limits_config:
+            rate_limits_config = DEFAULT_GEMINI_RATE_LIMITS
+        if isinstance(rate_limits_config, str):
+            rate_limits_text = rate_limits_config
+        else:
+            rate_limits_text = json.dumps(rate_limits_config, indent=2)
+        self.google_rate_limits_edit.blockSignals(True)
+        self.google_rate_limits_edit.setPlainText(rate_limits_text)
+        self.google_rate_limits_edit.blockSignals(False)
+        if self.llm_analyzer.nvidia_api_key:
+            self.nvidia_api_key_edit.setText(self.llm_analyzer.nvidia_api_key)
+
         self.populate_models()
         self.populate_vision_models()
         self.temp_edit.setText(str(self.llm_analyzer.temperature))
-        
-        # Sync provider combo
-        if self.llm_analyzer.provider == "google":
-            self.provider_combo.setCurrentText("Google AI Studio")
-        else:
-            self.provider_combo.setCurrentText("Ollama (Local)")
-        
-        # Sync API key
-        if self.llm_analyzer.google_api_key:
-            self.google_api_key_edit.setText(self.llm_analyzer.google_api_key)
         
         self.reset_apply_button()  # Reset button when populating with current values
 
@@ -1449,7 +1538,9 @@ class FileOrganizerGUI(QMainWindow):
         provider = self._get_selected_provider()
         try:
             if provider == "google":
-                api_key = self.google_api_key_edit.text().strip()
+                api_key = self.llm_analyzer.resolve_google_api_key(
+                    self.google_api_key_edit.text().strip() or None
+                )
                 if not api_key:
                     self.model_combo.addItem("Enter API key and click Refresh")
                     return
@@ -1462,6 +1553,24 @@ class FileOrganizerGUI(QMainWindow):
                 else:
                     self.model_combo.addItem("No models found")
                     QMessageBox.warning(self, "Google AI Studio", "Could not fetch models. Check your API key.")
+            elif provider == "nvidia":
+                api_key = self.nvidia_api_key_edit.text().strip()
+                if not api_key:
+                    self.model_combo.addItem("Enter NVIDIA API key and click Refresh")
+                    return
+                text_models = self.llm_analyzer.get_nvidia_text_models(api_key)
+                if text_models:
+                    current_model = self.llm_analyzer.model
+                    if self.llm_analyzer.provider == "nvidia" and current_model not in text_models:
+                        text_models.append(current_model)
+                    self.model_combo.addItems(text_models)
+                    if current_model in text_models:
+                        self.model_combo.setCurrentText(current_model)
+                else:
+                    self.model_combo.addItem("No models found")
+                    QMessageBox.warning(
+                        self, "NVIDIA Cloud", "Could not fetch text models. Check your API key."
+                    )
             else:
                 # Ollama provider
                 available_models = self.llm_analyzer.get_text_models()
@@ -1487,7 +1596,9 @@ class FileOrganizerGUI(QMainWindow):
         provider = self._get_selected_provider()
         try:
             if provider == "google":
-                api_key = self.google_api_key_edit.text().strip()
+                api_key = self.llm_analyzer.resolve_google_api_key(
+                    self.google_api_key_edit.text().strip() or None
+                )
                 if not api_key:
                     self.vision_model_combo.addItem("Enter API key and click Refresh")
                     return
@@ -1495,6 +1606,21 @@ class FileOrganizerGUI(QMainWindow):
                 if vision_models:
                     self.vision_model_combo.addItems(vision_models)
                     current_model = self.llm_analyzer.vision_model
+                    if current_model in vision_models:
+                        self.vision_model_combo.setCurrentText(current_model)
+                else:
+                    self.vision_model_combo.addItem("No vision models found")
+            elif provider == "nvidia":
+                api_key = self.nvidia_api_key_edit.text().strip()
+                if not api_key:
+                    self.vision_model_combo.addItem("Enter NVIDIA API key and click Refresh")
+                    return
+                vision_models = self.llm_analyzer.get_nvidia_vision_models(api_key)
+                if vision_models:
+                    current_model = self.llm_analyzer.vision_model
+                    if self.llm_analyzer.provider == "nvidia" and current_model not in vision_models:
+                        vision_models.append(current_model)
+                    self.vision_model_combo.addItems(vision_models)
                     if current_model in vision_models:
                         self.vision_model_combo.setCurrentText(current_model)
                 else:
@@ -1524,12 +1650,68 @@ class FileOrganizerGUI(QMainWindow):
         model = self.model_combo.currentText()
         vision_model = self.vision_model_combo.currentText()
         temperature_str = self.temp_edit.text()
-        google_api_key = self.google_api_key_edit.text().strip() if provider == "google" else self.llm_analyzer.google_api_key
+        google_api_key = (
+            self.llm_analyzer.resolve_google_api_key(
+                self.google_api_key_edit.text().strip() or None
+            )
+            if provider == "google"
+            else self.llm_analyzer.google_api_key
+        )
+        nvidia_api_key = (
+            self.nvidia_api_key_edit.text().strip()
+            if provider == "nvidia"
+            else self.llm_analyzer.nvidia_api_key
+        )
+        gemini_rate_limits = None
         
         # Validate provider-specific requirements
         if provider == "google" and not google_api_key:
             QMessageBox.warning(self, "Missing API Key", "Please enter your Google AI Studio API key.")
             return
+        if provider == "nvidia" and not nvidia_api_key:
+            QMessageBox.warning(self, "Missing API Key", "Please enter your NVIDIA API key.")
+            return
+        if provider in ("nvidia", "google"):
+            placeholders = ("Enter ", "No ", "Error fetching")
+            if model.startswith(placeholders) or vision_model.startswith(placeholders):
+                QMessageBox.warning(
+                    self, "Select Models",
+                    "Click Refresh and select valid text and vision models before applying."
+                )
+                return
+
+        if provider == "google":
+            raw_rate_limits = self.google_rate_limits_edit.toPlainText().strip()
+            try:
+                configured_limits = (
+                    parse_rate_limits(raw_rate_limits)
+                    if raw_rate_limits
+                    else load_rate_limits()
+                )
+                if raw_rate_limits:
+                    gemini_rate_limits = json.loads(raw_rate_limits)
+                else:
+                    gemini_rate_limits = {}
+                selected_project = os.environ.get("GEMINI_PROJECT_ID")
+                if (
+                    selected_project
+                    and selected_project != DEFAULT_GEMINI_PROJECT_ID
+                    and configured_limits == parse_rate_limits(DEFAULT_GEMINI_RATE_LIMITS)
+                ):
+                    raise GeminiRateLimitConfigurationError(
+                        "The displayed limits belong to project "
+                        f"{DEFAULT_GEMINI_PROJECT_ID}. Set GEMINI_RATE_LIMITS_JSON to "
+                        "this project's model limits before applying."
+                    )
+                missing_models = {model, vision_model} - set(configured_limits)
+                if missing_models:
+                    raise GeminiRateLimitConfigurationError(
+                        "Add RPM, TPM, and RPD values for: "
+                        + ", ".join(sorted(missing_models))
+                    )
+            except (GeminiRateLimitConfigurationError, json.JSONDecodeError) as e:
+                QMessageBox.warning(self, "Gemini Rate Limits", str(e))
+                return
         
         try:
             temperature = float(temperature_str)
@@ -1543,11 +1725,17 @@ class FileOrganizerGUI(QMainWindow):
             # Update LLM settings with provider info
             self.llm_analyzer.update_settings(
                 model, temperature, vision_model,
-                provider=provider, google_api_key=google_api_key
+                provider=provider, google_api_key=google_api_key,
+                nvidia_api_key=nvidia_api_key,
+                gemini_rate_limits=gemini_rate_limits,
             )
             
             self.reset_apply_button()
-            provider_label = "Google AI Studio" if provider == "google" else "Ollama"
+            provider_label = {
+                "google": "Google AI Studio",
+                "nvidia": "NVIDIA Cloud",
+                "ollama": "Ollama",
+            }[provider]
             QMessageBox.information(self, "Settings Updated", 
                 f"Settings updated successfully.\n"
                 f"Provider: {provider_label}\n"
@@ -1627,21 +1815,29 @@ class FileOrganizerGUI(QMainWindow):
         selection_model = self.file_tree.selectionModel()
         if selection_model is None:
             return selected_files
-        selection = selection_model.selectedIndexes()
-        supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.docx', '.doc', '.xlsx', '.xls', '.txt']
+        selection = selection_model.selectedRows(0)
+        supported_extensions = {
+            '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif',
+            '.docx', '.doc', '.xlsx', '.xls', '.txt'
+        }
+        selected_paths = set()
+
+        def add_if_supported(file_path):
+            extension = os.path.splitext(file_path)[1].lower()
+            if extension in supported_extensions and file_path not in selected_paths:
+                selected_paths.add(file_path)
+                selected_files.append(file_path)
+
         for index in selection:
-            if index.column() == 0:  # Avoid duplicates
-                file_path = self.file_system_model.filePath(index)
-                if os.path.isdir(file_path):
-                    # If a folder is selected, include all supported files under it
-                    for root, _, files in os.walk(file_path):
-                        for file in files:
-                            if any(file.lower().endswith(ext) for ext in supported_extensions):
-                                selected_files.append(os.path.join(root, file))
-                elif os.path.isfile(file_path):
-                    # If a file is selected, include it if supported
-                    if any(file_path.lower().endswith(ext) for ext in supported_extensions):
-                        selected_files.append(file_path)
+            file_path = self.file_system_model.filePath(index)
+            if os.path.isdir(file_path):
+                # If a folder is selected, include all supported files under it
+                for root, _, files in os.walk(file_path):
+                    for file in files:
+                        add_if_supported(os.path.join(root, file))
+            elif os.path.isfile(file_path):
+                # If a file is selected, include it if supported
+                add_if_supported(file_path)
         return selected_files
     
     def get_all_files_in_folder(self):
@@ -2754,8 +2950,8 @@ def main():
         from file_handler import FileHandler
         
         # Initialize components
-        document_processor = DocumentProcessor()
         llm_analyzer = LLMAnalyzer()
+        document_processor = DocumentProcessor(llm_analyzer)
         file_handler = FileHandler(base_output_dir=r"E:\scanned documents")
         
         # Create and show GUI

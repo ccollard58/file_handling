@@ -5,7 +5,7 @@ import json
 import requests
 from datetime import datetime
 from langchain_ollama.chat_models import ChatOllama
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage
 from PIL import Image
 import tempfile
@@ -13,6 +13,12 @@ import base64
 import mimetypes
 from typing import Optional
 from correction_handler import CorrectionHandler
+from llm_retry import call_with_retry
+from gemini_rate_limits import (
+    GeminiRateLimiter,
+    count_input_tokens,
+    load_rate_limits,
+)
 
 try:
     from google import genai
@@ -24,12 +30,16 @@ except ImportError:
 
 class LLMAnalyzer:
     def __init__(self, model="gemma3:latest", temperature=0.6, vision_model="llava:latest",
-                 provider="ollama", google_api_key=None):
+                 provider="ollama", google_api_key=None, nvidia_api_key=None,
+                 gemini_rate_limits=None):
         self.model = model
         self.temperature = temperature
         self.vision_model = vision_model
-        self.provider = provider  # "ollama" or "google"
+        self.provider = provider  # "ollama", "google", or "nvidia"
         self.google_api_key = google_api_key
+        self.gemini_rate_limits = gemini_rate_limits or {}
+        self._gemini_rate_limiter = None
+        self.nvidia_api_key = nvidia_api_key or os.environ.get("NVIDIA_API_KEY")
         self.google_client = None
         self.llm = None
         self.vision_llm = None
@@ -41,7 +51,10 @@ class LLMAnalyzer:
     def _as_text(response):
         """Best-effort extraction of text from a LangChain response or raw string."""
         try:
-            if hasattr(response, "text") and callable(getattr(response, "text")):
+            text = getattr(type(response), "text", None)
+            if isinstance(text, property):
+                return str(response.text)
+            if callable(getattr(response, "text", None)):
                 return response.text()
             if hasattr(response, "content"):
                 return response.content if isinstance(response.content, str) else str(response.content)
@@ -93,6 +106,12 @@ class LLMAnalyzer:
         with open(path_str, "rb") as f:
             return base64.b64encode(f.read()).decode("ascii")
 
+    @staticmethod
+    def resolve_google_api_key(api_key=None):
+        from vision_evaluation.gemini_models import get_api_key
+
+        return get_api_key(api_key)
+
     def _is_qwen_model(self, model_name):
         """Check if the model is a Qwen model that requires specific hyperparameters."""
         if not model_name:
@@ -107,21 +126,64 @@ class LLMAnalyzer:
         return any(pattern in model_lower for pattern in qwen_patterns)
 
     def _init_google_client(self):
-        """Initialize or reinitialize the Google GenAI client."""
+        """Initialize the Gemini token-counting client."""
         if not GOOGLE_GENAI_AVAILABLE:
             raise RuntimeError("google-genai package is not installed. Run: pip install -U google-genai")
+        self.google_api_key = self.resolve_google_api_key(self.google_api_key)
         if not self.google_api_key:
             raise RuntimeError("Google API key is not set. Please enter your API key in Settings.")
-        self.google_client = genai.Client(api_key=self.google_api_key)
-        logging.info("Google GenAI client initialized successfully")
+        self.google_client = genai.Client(
+            api_key=self.google_api_key,
+            http_options=google_types.HttpOptions(
+                retry_options=google_types.HttpRetryOptions(attempts=1)
+            ),
+        )
+        logging.info("Gemini token-counting client initialized successfully")
+
+    def _get_gemini_rate_limiter(self):
+        if self._gemini_rate_limiter is None:
+            self._gemini_rate_limiter = GeminiRateLimiter(
+                api_key=self.google_api_key,
+                limits=self.gemini_rate_limits or load_rate_limits(),
+            )
+        return self._gemini_rate_limiter
+
+    def _generate_google_content(self, model, contents, invoke):
+        """Count and reserve Gemini quota before issuing one generation request."""
+        input_tokens = count_input_tokens(self.google_client, model, contents)
+        limiter = self._get_gemini_rate_limiter()
+        with limiter.admit(model, input_tokens):
+            response = invoke()
+        return self._as_text(response)
 
     def initialize_llm(self):
         """Initializes the LLM instance based on the selected provider."""
         try:
             if self.provider == "google":
                 self._init_google_client()
-                self.llm = True  # sentinel — we use google_client directly
+                from vision_evaluation.gemini_models import create_chat_model
+
+                self.llm = create_chat_model(
+                    self.model,
+                    temperature=self.temperature,
+                    max_tokens=1024,
+                    timeout=300,
+                    api_key=self.google_api_key,
+                )
                 logging.info(f"Google AI Studio LLM initialized with model {self.model}, temperature {self.temperature}")
+            elif self.provider == "nvidia":
+                from vision_evaluation.nvidia_models import create_chat_model
+
+                self.llm = create_chat_model(
+                    self.model,
+                    temperature=self.temperature,
+                    timeout=300,
+                    api_key=self.nvidia_api_key,
+                )
+                logging.info(
+                    f"NVIDIA Cloud LLM initialized with model {self.model}, "
+                    f"temperature {self.temperature}"
+                )
             else:
                 # Ollama provider
                 if self._is_qwen_model(self.model):
@@ -145,11 +207,31 @@ class LLMAnalyzer:
         """Initializes the vision-capable LLM instance."""
         try:
             if self.provider == "google":
-                # Google models are multimodal — reuse the same client
                 if self.google_client is None:
                     self._init_google_client()
-                self.vision_llm = True  # sentinel — we use google_client directly
+                from vision_evaluation.gemini_models import create_chat_model
+
+                self.vision_llm = create_chat_model(
+                    self.vision_model,
+                    temperature=0.0,
+                    max_tokens=1024,
+                    timeout=300,
+                    api_key=self.google_api_key,
+                )
                 logging.info(f"Google AI Studio Vision LLM initialized with model {self.vision_model}")
+            elif self.provider == "nvidia":
+                from vision_evaluation.nvidia_models import create_chat_model
+
+                self.vision_llm = create_chat_model(
+                    self.vision_model,
+                    temperature=0.0,
+                    timeout=300,
+                    api_key=self.nvidia_api_key,
+                )
+                logging.info(
+                    "NVIDIA Cloud Vision LLM initialized with model "
+                    f"{self.vision_model}"
+                )
             else:
                 # Ollama provider
                 if self._is_qwen_model(self.vision_model):
@@ -169,39 +251,65 @@ class LLMAnalyzer:
             self.vision_llm = None
 
     def _invoke_llm(self, prompt_text):
-        """Invoke the text LLM and return the response text string."""
+        """Invoke the text LLM (with retry on transient errors) and return the response text."""
+        return call_with_retry(
+            lambda: self._invoke_llm_once(prompt_text),
+            description=f"Extraction model '{self.model}'",
+        )
+
+    def _invoke_llm_once(self, prompt_text):
         if self.provider == "google":
-            response = self.google_client.models.generate_content(
-                model=self.model,
-                contents=prompt_text,
-                config=google_types.GenerateContentConfig(
-                    temperature=self.temperature,
-                ),
+            return self._generate_google_content(
+                self.model,
+                prompt_text,
+                lambda: self.llm.invoke(prompt_text),
             )
-            return response.text
         else:
             response = self.llm.invoke(prompt_text)
             return self._as_text(response)
 
     def _invoke_vision_llm(self, prompt_text, image_path):
-        """Invoke the vision LLM with an image and return the response text string."""
+        """Invoke the vision LLM (with retry on transient errors) and return the response text."""
+        return call_with_retry(
+            lambda: self._invoke_vision_llm_once(prompt_text, image_path),
+            description=f"Vision model '{self.vision_model}'",
+        )
+
+    def _invoke_vision_llm_once(self, prompt_text, image_path):
         if self.provider == "google":
-            # Read image bytes and determine MIME type
+            prepared_path = self._prepare_image_path(image_path)
+            from gemini_rate_limits import image_contents
+
+            contents = image_contents(prepared_path, prompt_text)
+            image_url = self._image_to_data_url(prepared_path)
+            message = HumanMessage(
+                content=[
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ]
+            )
+            return self._generate_google_content(
+                self.vision_model,
+                contents,
+                lambda: self.vision_llm.invoke([message]),
+            )
+        elif self.provider == "nvidia":
             prepared_path = self._prepare_image_path(image_path)
             mime, _ = mimetypes.guess_type(prepared_path)
             if not mime or not mime.startswith("image/"):
                 mime = "image/png"
-            with open(prepared_path, "rb") as f:
-                image_bytes = f.read()
-            image_part = google_types.Part.from_bytes(data=image_bytes, mime_type=mime)
-            response = self.google_client.models.generate_content(
-                model=self.vision_model,
-                contents=[image_part, prompt_text],
-                config=google_types.GenerateContentConfig(
-                    temperature=0.0,
-                ),
+            message = HumanMessage(
+                content=[
+                    {"type": "text", "text": prompt_text},
+                    {
+                        "type": "image",
+                        "base64": self._image_to_base64(prepared_path),
+                        "mime_type": mime,
+                    },
+                ]
             )
-            return response.text
+            response = self.vision_llm.invoke([message])
+            return self._as_text(response)
         else:
             # Ollama vision path (existing logic)
             prepared_path = self._prepare_image_path(image_path)
@@ -235,7 +343,8 @@ class LLMAnalyzer:
                     raise
 
     def update_settings(self, model, temperature, vision_model=None,
-                        provider=None, google_api_key=None):
+                        provider=None, google_api_key=None, nvidia_api_key=None,
+                        gemini_rate_limits=None):
         """Updates the LLM model and temperature and re-initializes the LLM."""
         self.model = model
         self.temperature = float(temperature)
@@ -245,46 +354,39 @@ class LLMAnalyzer:
             self.provider = provider
         if google_api_key is not None:
             self.google_api_key = google_api_key
+        if gemini_rate_limits is not None:
+            self.gemini_rate_limits = gemini_rate_limits or {}
+        self._gemini_rate_limiter = None
+        if nvidia_api_key is not None:
+            self.nvidia_api_key = nvidia_api_key
         self.initialize_llm()
         self.initialize_vision_llm()
 
     @staticmethod
+    def get_nvidia_text_models(api_key):
+        """Fetch text-capable models from NVIDIA Cloud."""
+        from vision_evaluation.nvidia_models import fetch_text_models
+
+        return fetch_text_models(api_key=api_key)
+
+    @staticmethod
+    def get_nvidia_vision_models(api_key):
+        """Fetch vision-capable models from NVIDIA Cloud."""
+        from vision_evaluation.nvidia_models import fetch_vision_models
+
+        return [
+            model.model_id
+            for model in fetch_vision_models(api_key=api_key)
+        ]
+
+    @staticmethod
     def get_google_models(api_key):
         """Fetches available Gemini models from Google AI Studio."""
-        if not GOOGLE_GENAI_AVAILABLE:
-            logging.error("google-genai package not installed.")
-            return [], []
-        if not api_key:
-            logging.error("Google API key not provided.")
-            return [], []
-        try:
-            client = genai.Client(api_key=api_key)
-            all_models = []
-            for model in client.models.list():
-                name = model.name
-                # The API returns names like "models/gemini-2.5-flash" — strip the prefix
-                if name.startswith("models/"):
-                    name = name[len("models/"):]
-                all_models.append(name)
-            # Filter to generative models (exclude embedding, image-gen-only, etc.)
-            text_models = []
-            vision_models = []
-            for m in all_models:
-                ml = m.lower()
-                # Skip non-generative models
-                if any(skip in ml for skip in ['embedding', 'aqa', 'retrieval', 'imagen',
-                                                'veo', 'lyria', 'tts', 'live', 'robotics',
-                                                'nano-banana']):
-                    continue
-                text_models.append(m)
-                # Gemini models are multimodal — they all support vision
-                vision_models.append(m)
-            text_models.sort()
-            vision_models.sort()
-            return text_models, vision_models
-        except Exception as e:
-            logging.error(f"Error fetching Google AI Studio models: {e}")
-            return [], []
+        from vision_evaluation.gemini_models import fetch_model_ids
+
+        resolved_key = LLMAnalyzer.resolve_google_api_key(api_key)
+        model_ids = fetch_model_ids(api_key=resolved_key)
+        return model_ids, model_ids.copy()
 
     @staticmethod
     def get_available_models(ollama_base_url="http://localhost:11434"):
@@ -314,6 +416,8 @@ class LLMAnalyzer:
                 'minicpm-v',       # MiniCPM vision models
                 'qwen2.5vl',       # Qwen vision-language models
                 'qwen3-vl',        # Qwen3 vision-language models
+                'qwen3.5',         # Qwen3.5 multimodal models
+                'nemotron-3.5-bolt', # Nemotron 3.5 Bolt vision-language models
                 'moondream',       # Moondream vision models
                 'bakllava',        # BakLLaVA models
                 'mistral-small3',  # Mistral Small 3.1/3.2 with vision
@@ -365,12 +469,14 @@ class LLMAnalyzer:
                 'minicpm-v',       # MiniCPM vision models
                 'qwen2.5vl',       # Qwen vision-language models
                 'qwen3-vl',        # Qwen3 vision-language models
+                'qwen3.5',         # Qwen3.5 multimodal models
                 'moondream',       # Moondream vision models
                 'bakllava',        # BakLLaVA models
                 'mistral-small3',  # Mistral Small 3.1/3.2 with vision
                 'granite3.2-vision', # Granite vision models
                 'cogvlm',          # CogVLM models
                 'pixtral',         # Pixtral models
+                'nemotron-3.5-bolt', # Nemotron 3.5 Bolt vision-language models
                 'gemma',          # Gemma has vision capabilities (some variants are dual-use)
                 'llama4'           # Llama4 multimodal models (some variants are dual-use)
             ]
@@ -762,12 +868,14 @@ class LLMAnalyzer:
         
         # If no match, use LLM to determine the most likely person
         prompt = PromptTemplate(
-            input_variables=["text", "identity_examples"],
+            input_variables=["filename", "text", "identity_examples"],
             template="""
             Based on the following document text, determine if it most likely belongs to "Chuck Collard" 
             (also known as "Charles Collard" or "Charles W Collard") or "Colleen McGinnis" (also known as "Colleen Collard" or "Colleen Mueginnis").
             
             IMPORTANT RULES:
+            - As a weak ownership clue, mind maps, psychology, photography, persuasion, and similar topics are more likely to belong to Chuck.
+            - Only use that topic-based clue when there is no specific content indicating Colleen. Explicit names, personal details, or clear Colleen-related content take precedence.
             - If the document is related to plants, gardening, flowers, trees, landscaping, or any botanical content, it belongs to Chuck.
             - If the document is related to the Catholic Church, religious activities, volunteering at church, 
               or contains terms like "diocese", "parish", "ministry", "faith", then it belongs to Colleen.
@@ -775,6 +883,9 @@ class LLMAnalyzer:
             - If the document contains hearing-related content, it likely belongs to Chuck.
             - Look for any variation of the names including different spellings.
             {identity_examples}
+            Filename:
+            {filename}
+
             Document text:
             {text}
             
@@ -782,7 +893,11 @@ class LLMAnalyzer:
             """
         )
         
-        formatted_prompt = prompt.format(text=text[:5000], identity_examples=identity_examples)
+        formatted_prompt = prompt.format(
+            filename=filename or "(not provided)",
+            text=text[:5000],
+            identity_examples=identity_examples,
+        )
         logging.info("=== LLM IDENTITY DETECTION ===")
         logging.info(f"Model: {self.model}")
         logging.info(f"Text preview: {text[:100]}...")

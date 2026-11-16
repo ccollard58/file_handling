@@ -496,8 +496,19 @@ class DocumentProcessor:
             logging.warning("Cannot analyze PDF with vision LLM: pdf2image not available.")
             return ""
         
-        if not self.llm_analyzer or not self.llm_analyzer.vision_llm:
-            logging.warning("Vision LLM not available in LLM analyzer.")
+        if not self.llm_analyzer:
+            logging.warning(
+                "Cannot analyze PDF with vision LLM: no LLM analyzer is attached "
+                "to DocumentProcessor."
+            )
+            return ""
+        if not self.llm_analyzer.vision_llm:
+            logging.warning(
+                "Cannot analyze PDF with vision LLM: the configured vision model "
+                "is not initialized (provider=%s, model=%s).",
+                self.llm_analyzer.provider,
+                self.llm_analyzer.vision_model,
+            )
             return ""
         
         try:
@@ -562,8 +573,19 @@ Please be thorough in extracting text - include headers, body text, captions, an
     
     def _analyze_image_with_vision_llm(self, file_path):
         """Analyze image with vision-capable LLM when OCR fails."""
-        if not self.llm_analyzer or not self.llm_analyzer.vision_llm:
-            logging.warning("Vision LLM not available in LLM analyzer.")
+        if not self.llm_analyzer:
+            logging.warning(
+                "Cannot analyze image with vision LLM: no LLM analyzer is attached "
+                "to DocumentProcessor."
+            )
+            return ""
+        if not self.llm_analyzer.vision_llm:
+            logging.warning(
+                "Cannot analyze image with vision LLM: the configured vision model "
+                "is not initialized (provider=%s, model=%s).",
+                self.llm_analyzer.provider,
+                self.llm_analyzer.vision_model,
+            )
             return ""
         
         try:

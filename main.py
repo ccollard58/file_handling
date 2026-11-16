@@ -19,6 +19,7 @@ def load_saved_llm_settings() -> dict:
         "vision_model": "llava:latest",
         "temperature": 0.6,
         "google_api_key": None,
+        "nvidia_api_key": None,
     }
 
     if not os.path.exists(config_file):
@@ -34,6 +35,7 @@ def load_saved_llm_settings() -> dict:
             "vision_model": llm_settings.get("vision_model", default_settings["vision_model"]),
             "temperature": llm_settings.get("temperature", default_settings["temperature"]),
             "google_api_key": llm_settings.get("google_api_key", "") or None,
+            "nvidia_api_key": llm_settings.get("nvidia_api_key", "") or None,
         }
     except Exception as exc:
         logging.warning(f"Unable to load LLM settings from config: {exc}")
@@ -91,6 +93,7 @@ def main():
             vision_model=saved_llm_settings["vision_model"],
             provider=saved_llm_settings["provider"],
             google_api_key=saved_llm_settings["google_api_key"],
+            nvidia_api_key=saved_llm_settings["nvidia_api_key"],
         )
         document_processor = DocumentProcessor(llm_analyzer)  # Pass llm_analyzer to document processor
         

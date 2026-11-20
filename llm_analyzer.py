@@ -560,7 +560,8 @@ class LLMAnalyzer:
                 "date": date,
                 "description": doc_info["description"],
                 "category": doc_info["category"],
-                "financial_institution": doc_info.get("financial_institution")
+                "financial_institution": doc_info.get("financial_institution"),
+                "model_response": doc_info.get("model_response")
             }
         except Exception as e:
             logging.error(f"Error analyzing document {filename}: {str(e)}")
@@ -632,9 +633,6 @@ class LLMAnalyzer:
                     result = json.loads(json_match.group(0))
                     logging.debug(f"Successfully extracted JSON from vision analysis: {result}")
                     
-                    # Extract date from filename or use creation date
-                    date = self._extract_date("", filename, creation_date)
-                    
                     # Get visible text from vision analysis
                     visible_text = result.get("visible_text", "").strip()
                     
@@ -652,7 +650,9 @@ class LLMAnalyzer:
                             "date": extracted_date,
                             "description": paystub_analysis["description"],
                             "category": paystub_analysis["category"],
-                            "financial_institution": None
+                            "financial_institution": None,
+                            "vision_analysis": result,
+                            "model_response": response_text
                         }
                     
                     # Return the LLM-provided description and category
@@ -661,7 +661,9 @@ class LLMAnalyzer:
                         "date": extracted_date,
                         "description": result.get("description", "Image Document"),
                         "category": result.get("category", "Other"),
-                        "financial_institution": result.get("financial_institution")
+                        "financial_institution": result.get("financial_institution"),
+                        "vision_analysis": result,
+                        "model_response": response_text
                     }
                 except json.JSONDecodeError as json_err:
                     logging.warning(f"JSON decode error for vision analysis of {filename}: {json_err}")
@@ -670,8 +672,10 @@ class LLMAnalyzer:
             else:
                 # Fallback if JSON parsing fails
                 logging.warning(f"Could not parse LLM response for image {filename}")
-                return self._create_image_fallback_result(filename, creation_date)
-                
+            fallback = self._create_image_fallback_result(filename, creation_date)
+            fallback["model_response"] = response_text
+            return fallback
+
         except Exception as e:
             logging.error(f"Error in visual image analysis: {str(e)}")
             return self._create_image_fallback_result(filename, creation_date)
@@ -1136,7 +1140,8 @@ class LLMAnalyzer:
                     return {
                         "description": result.get("description", "Unknown Document"),
                         "category": result.get("category", "Uncategorized"),
-                        "financial_institution": result.get("financial_institution")
+                        "financial_institution": result.get("financial_institution"),
+                        "model_response": response_text
                     }
                 except json.JSONDecodeError as json_err:
                     logging.warning(f"JSON decode error for {filename}: {json_err}")
@@ -1151,7 +1156,8 @@ class LLMAnalyzer:
             return {
                 "description": description_match.group(1) if description_match else "Unknown Document",
                 "category": category_match.group(1) if category_match else "Uncategorized",
-                "financial_institution": institution_match.group(1) if institution_match else None
+                "financial_institution": institution_match.group(1) if institution_match else None,
+                "model_response": response_text
             }
         except Exception as e:
             logging.error(f"Error in LLM analysis: {str(e)}")

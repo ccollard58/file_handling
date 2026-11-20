@@ -25,6 +25,7 @@ DEFAULT_GEMINI_PROJECT_ID = "gen-lang-client-0321985034"
 # gen-lang-client-0321985034 on 2026-11-08. Pass a different map through the
 # Settings panel or GEMINI_RATE_LIMITS_JSON if the project's limits change.
 DEFAULT_GEMINI_RATE_LIMITS = {
+    "gemini-4-hydrogen": {"rpm": 5, "tpm": 250000, "rpd": 20},
     "gemini-3.8-flash": {"rpm": 5, "tpm": 250000, "rpd": 20},
     "gemini-3.7-flash": {"rpm": 5, "tpm": 250000, "rpd": 20},
     "gemini-3-flash-preview": {"rpm": 5, "tpm": 250000, "rpd": 20},
@@ -100,6 +101,24 @@ def parse_rate_limits(value) -> Dict[str, ModelRateLimits]:
     return parsed
 
 
+def upgrade_stale_defaults(value):
+    """Return the current built-in limits when value is an older, unedited subset.
+
+    Saved settings keep a snapshot of the defaults, so models added later would
+    otherwise be missing from it. Any customised or foreign entry is left alone.
+    """
+    if not value:
+        return value
+    try:
+        limits = parse_rate_limits(value)
+    except GeminiRateLimitConfigurationError:
+        return value
+    defaults = parse_rate_limits(DEFAULT_GEMINI_RATE_LIMITS)
+    if limits != defaults and all(defaults.get(m) == l for m, l in limits.items()):
+        return DEFAULT_GEMINI_RATE_LIMITS
+    return value
+
+
 def load_rate_limits(value=None) -> Dict[str, ModelRateLimits]:
     """Read limits from a mapping/JSON string or GEMINI_RATE_LIMITS_JSON."""
     if value is None:
@@ -131,7 +150,7 @@ class GeminiRateLimiter:
     """
 
     def __init__(self, api_key: str, limits, database_path=None, project_id=None):
-        self.limits = parse_rate_limits(limits)
+        self.limits = parse_rate_limits(upgrade_stale_defaults(limits))
         key_fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         # Gemini Developer API keys do not expose their project ID. Set
         # GEMINI_PROJECT_ID to make separate keys in one project share state.

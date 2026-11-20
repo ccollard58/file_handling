@@ -18,6 +18,7 @@ from gemini_rate_limits import (
     GeminiRateLimitConfigurationError,
     load_rate_limits,
     parse_rate_limits,
+    upgrade_stale_defaults,
 )
 
 
@@ -585,9 +586,6 @@ class FileAnalysisThread(QThread):
                     file_path  # Pass the full file path for image analysis
                 )
 
-                # Store metadata in the source file immediately
-                self.file_handler.add_metadata_to_image(file_path, analysis_result, extracted_text)
-                
                 # Generate new filename
                 new_filename = self.file_handler.generate_new_filename(
                     analysis_result, 
@@ -612,6 +610,7 @@ class FileAnalysisThread(QThread):
                     'description': analysis_result['description'],
                     'category': analysis_result['category'],
                     'financial_institution': analysis_result.get('financial_institution'),
+                    'model_analysis': analysis_result,
                     'extracted_text': extracted_text  # Store the extracted text for preview
                 }
                 
@@ -1516,6 +1515,7 @@ class FileOrganizerGUI(QMainWindow):
             rate_limits_config = os.environ.get("GEMINI_RATE_LIMITS_JSON")
         if not rate_limits_config:
             rate_limits_config = DEFAULT_GEMINI_RATE_LIMITS
+        rate_limits_config = upgrade_stale_defaults(rate_limits_config)
         if isinstance(rate_limits_config, str):
             rate_limits_text = rate_limits_config
         else:
@@ -1681,7 +1681,9 @@ class FileOrganizerGUI(QMainWindow):
                 return
 
         if provider == "google":
-            raw_rate_limits = self.google_rate_limits_edit.toPlainText().strip()
+            raw_rate_limits = upgrade_stale_defaults(
+                self.google_rate_limits_edit.toPlainText().strip()
+            )
             try:
                 configured_limits = (
                     parse_rate_limits(raw_rate_limits)
@@ -1689,7 +1691,11 @@ class FileOrganizerGUI(QMainWindow):
                     else load_rate_limits()
                 )
                 if raw_rate_limits:
-                    gemini_rate_limits = json.loads(raw_rate_limits)
+                    gemini_rate_limits = (
+                        json.loads(raw_rate_limits)
+                        if isinstance(raw_rate_limits, str)
+                        else dict(raw_rate_limits)
+                    )
                 else:
                     gemini_rate_limits = {}
                 selected_project = os.environ.get("GEMINI_PROJECT_ID")
@@ -2635,10 +2641,12 @@ class FileOrganizerGUI(QMainWindow):
                 destination_path = os.path.join(self.file_handler.base_output_dir, file_data['destination_folder'])
                   # Move and rename file                # Create analysis result dictionary from the updated data
                 analysis_result = {
+                    **file_data.get('model_analysis', {}),
                     'identity': file_data['identity'],
                     'date': file_data['date'],
                     'description': file_data['description'],
-                    'category': file_data.get('category', 'Other')  # Default to Other if not set
+                    'category': file_data.get('category', 'Other'),
+                    'financial_institution': file_data.get('financial_institution')
                 }
                 
                 result = self.file_handler.move_and_rename_file(
@@ -2646,7 +2654,7 @@ class FileOrganizerGUI(QMainWindow):
                     file_data['new_filename'],
                     destination_path,
                     analysis_result,
-                    ""  # extracted_text - empty string as fallback
+                    file_data.get('extracted_text', '')
                 )
                 
                 if result:  # Success returns the new path
@@ -2655,7 +2663,8 @@ class FileOrganizerGUI(QMainWindow):
                     source_folder = os.path.dirname(file_data['original_path'])
                     source_folders.add(source_folder)
                 else:  # Failure returns None
-                    failed_moves.append(f"{file_data['new_filename']}: Failed to move file")
+                    error = self.file_handler.last_error or "Failed to move file"
+                    failed_moves.append(f"{file_data['new_filename']}: {error}")
                     
             except Exception as e:
                 error_msg = str(e)

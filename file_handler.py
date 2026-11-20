@@ -2,16 +2,19 @@ import os
 import shutil
 from datetime import datetime
 import logging
-from PIL import Image, ExifTags
 import json
 import uuid
 import time
 import psutil
+import tempfile
+
+from embedded_analysis import embed_analysis
 
 class FileHandler:
     def __init__(self, base_output_dir):
         """Initialize with the base output directory."""
         self.base_output_dir = base_output_dir
+        self.last_error = None
         
         self.backup_dir = os.path.join(self.base_output_dir, '.backup')
         if not os.path.exists(self.backup_dir):
@@ -110,62 +113,10 @@ class FileHandler:
         return os.path.join(self.base_output_dir, category)
     
     def add_metadata_to_image(self, file_path, analysis_result, extracted_text):
-        """Add metadata to image files."""
-        # Only process image files
+        """Add analysis metadata to supported image files."""
         ext = os.path.splitext(file_path)[1].lower()
-        if ext not in ['.jpg', '.jpeg']:
-            return
-        
-        img = None
-        try:
-            # Open the image
-            img = Image.open(file_path)
-            
-            # Create a dictionary of metadata
-            metadata = {
-                "DocumentType": analysis_result["category"],
-                "Description": analysis_result["description"],
-                "ProcessedDate": datetime.now().strftime("%Y-%m-%d"),
-                "Identity": analysis_result["identity"],
-                "DocumentDate": analysis_result["date"]
-            }
-
-            # Add extracted text if available
-            if extracted_text:
-                # Clean up text to avoid issues with newlines/excessive whitespace
-                clean_text = " ".join(str(extracted_text).split())
-                # Truncate if extremely long to avoid EXIF limits (limit to ~30KB to be safe)
-                if len(clean_text) > 30000:
-                    clean_text = clean_text[:30000] + "..."
-                metadata["ExtractedText"] = clean_text
-            
-            # Add metadata to EXIF
-            exif_dict = img.getexif()
-            if not exif_dict:
-                exif_dict = Image.Exif()
-            
-            # Add to UserComment field (37510)
-            # Use JSON format for better structure and handling of special characters
-            try:
-                user_comment = json.dumps(metadata, ensure_ascii=False)
-            except Exception:
-                # Fallback to simple string format if JSON fails
-                user_comment = ", ".join([f"{k}: {v}" for k, v in metadata.items()])
-
-            exif_dict[37510] = user_comment.encode('utf-16')
-            
-            # Save the image with the new metadata
-            img.save(file_path, exif=exif_dict)
-            logging.info(f"Added metadata to {file_path}")
-            
-        except Exception as e:
-            logging.error(f"Error adding metadata to {file_path}: {str(e)}")
-        finally:
-            if img is not None:
-                try:
-                    img.close()
-                except Exception as close_error:
-                    logging.debug(f"Failed to close image while adding metadata for {file_path}: {close_error}")
+        if ext in ['.jpg', '.jpeg', '.png']:
+            embed_analysis(file_path, analysis_result, extracted_text)
     
     def _is_file_in_use(self, file_path):
         """Check if a file is currently in use by another process."""
@@ -215,6 +166,10 @@ class FileHandler:
     
     def move_and_rename_file(self, original_path, new_filename, destination_path, analysis_result, extracted_text):
         """Move and rename the file, adding metadata if appropriate."""
+        self.last_error = None
+        prepared_path = None
+        backup_path = None
+        moved = False
         try:
             logging.info(f"Moving file from {original_path} to {destination_path}/{new_filename}")
             
@@ -268,6 +223,15 @@ class FileHandler:
                     else:
                         raise Exception(f"Failed to create backup after {max_backup_retries} attempts: {e}")
 
+            file_ext = os.path.splitext(original_path)[1].lower()
+            if file_ext in ('.pdf', '.jpg', '.jpeg', '.png'):
+                handle, prepared_path = tempfile.mkstemp(
+                    prefix='.analysis-', suffix=file_ext, dir=destination_path
+                )
+                os.close(handle)
+                shutil.copy2(original_path, prepared_path)
+                embed_analysis(prepared_path, analysis_result, extracted_text)
+
             # Move the file to new location (with retry for locked files)
             logging.debug(f"Moving file from {original_path} to {new_path}")
             
@@ -275,6 +239,7 @@ class FileHandler:
             for move_attempt in range(max_move_retries):
                 try:
                     shutil.move(original_path, new_path)
+                    moved = True
                     break
                 except (OSError, IOError) as e:
                     if "being used by another process" in str(e) or "Access is denied" in str(e):
@@ -306,13 +271,17 @@ class FileHandler:
                                 pass
                         raise
             
+            if prepared_path:
+                try:
+                    os.replace(prepared_path, new_path)
+                    prepared_path = None
+                except OSError:
+                    shutil.move(new_path, original_path)
+                    moved = False
+                    raise
+
             # Log the action for possible undo
             self._log_action(original_path, new_path, backup_path)
-            
-            # Add metadata to image files
-            file_ext = os.path.splitext(original_path)[1].lower()
-            if file_ext in ['.jpg', '.jpeg']:
-                self.add_metadata_to_image(new_path, analysis_result, extracted_text)
 
             # Set the file's modification date
             try:
@@ -343,10 +312,22 @@ class FileHandler:
             
             return new_path
         except Exception as e:
+            self.last_error = str(e)
             logging.error(f"Error moving file {original_path}: {str(e)}")
             logging.error(f"Destination path was: {destination_path}")
             logging.error(f"New filename was: {new_filename}")
             return None
+        finally:
+            if prepared_path and os.path.exists(prepared_path):
+                try:
+                    os.remove(prepared_path)
+                except OSError as cleanup_error:
+                    logging.error("Failed to remove temporary file %s: %s", prepared_path, cleanup_error)
+            if self.last_error and not moved and backup_path and os.path.exists(backup_path):
+                try:
+                    os.remove(backup_path)
+                except OSError as cleanup_error:
+                    logging.error("Failed to remove unused backup %s: %s", backup_path, cleanup_error)
 
     def _load_actions(self):
         """Load actions log from file."""

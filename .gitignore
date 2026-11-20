@@ -27,3 +27,8 @@ vision_evaluation/logs/*
 vision_evaluation/ocr_results/*
 vision_evaluation/temperature_optimization_results/*
 vision_evaluation/__pycache__/*
+vision_evaluation_summary_*
+zwiftpower_115014_20261109_080918.xlsx
+.gitignore
+.backup/zwiftpower_115014_20261109_080918_before_max_hr_chart.xlsx
+~$vision_evaluation_summary_20261031_070157.xlsx

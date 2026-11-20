@@ -28,7 +28,7 @@ CATALOG_MODEL_PATHS = {
     "stepfun-ai/step-5-preview": "stepfun-ai/step-5-preview",
     "z-ai/glm-5.3-flash": "z-ai/glm-5-3-flash",
 }
-GLM_REASONING_EFFORT = "low"
+GLM_REASONING_EFFORT = "max"
 NVIDIA_LONG_RUNNING_VISION_MODEL_IDS = {
     "deepseek-ai/deepseek-v4.1-flash",
     "z-ai/glm-5.3-flash",

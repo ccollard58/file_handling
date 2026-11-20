@@ -15,13 +15,14 @@ GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_BASE_URL = f"{GEMINI_API_ROOT}/openai/"
 API_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 # Gemini models that cannot transcribe an image into text or act as a text judge.
+# Omni models use the Interactions API, which this chat-completions adapter does not support.
 _EXCLUDED_MARKERS = (
     "tts", "embedding", "image", "audio", "live", "robotics",
-    "computer-use", "aqa", "imagen", "veo",
+    "computer-use", "aqa", "imagen", "veo", "omni",
 )
 # Thinking tokens count against max_tokens, so leave room for them.
 MIN_MAX_TOKENS = 4096
-REASONING_EFFORT = "low"
+REASONING_EFFORT = "high"
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ def parse_model_ids(models: List[Dict[str, Any]]) -> List[str]:
         model_id = (model.get("name") or "").removeprefix("models/")
         methods = model.get("supportedGenerationMethods") or []
         if (
-            model_id.startswith("gemini")
+            model_id.startswith(("gemini", "gemma-4"))
             and "generateContent" in methods
             and not any(marker in model_id for marker in _EXCLUDED_MARKERS)
         ):
@@ -110,6 +111,16 @@ def create_chat_model(
     api_key: Optional[str] = None,
 ):
     """Create a LangChain ChatOpenAI client pointed at the Gemini API."""
+    normalized_model = model.removeprefix("models/")
+    if normalized_model.startswith("gemini-omni-"):
+        raise ValueError(
+            f"{model!r} cannot be used by this Gemini evaluator: Gemini Omni models "
+            "use the Interactions API for video generation and editing, while this "
+            "evaluator calls Gemini through the OpenAI-compatible chat endpoint. "
+            "The gemini-omni-flash-preview model was shut down; choose a supported "
+            "Gemini chat model such as gemini-3.8-flash."
+        )
+
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
